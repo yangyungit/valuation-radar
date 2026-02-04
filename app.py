@@ -6,53 +6,53 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 基础配置 ---
-st.set_page_config(page_title="宏观雷达 (专业洁净版)", layout="wide")
+st.set_page_config(page_title="宏观雷达 (Pro)", layout="wide")
 
-# 纯净版资产池 (无Emoji, Crypto分拆)
+# 纯净版资产池 (无Emoji, 无代码后缀)
 ASSETS = {
     # --- 全球核心指数 ---
-    "标普500 (SPY)": "SPY",
-    "纳指100 (QQQ)": "QQQ",
-    "罗素小盘 (IWM)": "IWM",
-    "中概互联 (KWEB)": "KWEB",
-    "中国大盘 (FXI)": "FXI",
-    "日本股市 (EWJ)": "EWJ",
-    "印度股市 (INDA)": "INDA",
-    "欧洲股市 (VGK)": "VGK",
-    "越南股市 (VNM)": "VNM",
+    "标普500": "SPY",
+    "纳指100": "QQQ",
+    "罗素小盘": "IWM",
+    "中概互联": "KWEB",
+    "中国大盘": "FXI",
+    "日本股市": "EWJ",
+    "印度股市": "INDA",
+    "欧洲股市": "VGK",
+    "越南股市": "VNM",
 
     # --- 核心行业 ---
-    "AI机器人 (BOTZ)": "BOTZ",
-    "半导体 (SMH)": "SMH",
-    "科技 (XLK)": "XLK",
-    "金融 (XLF)": "XLF",
-    "能源 (XLE)": "XLE",
-    "医疗 (XLV)": "XLV",
-    "工业 (XLI)": "XLI",
-    "房地产 (XLRE)": "XLRE",
-    "消费 (XLY)": "XLY",
-    "公用事业 (XLU)": "XLU",
+    "AI机器人": "BOTZ",
+    "半导体": "SMH",
+    "科技": "XLK",
+    "金融": "XLF",
+    "能源": "XLE",
+    "医疗": "XLV",
+    "工业": "XLI",
+    "房地产": "XLRE",
+    "消费": "XLY",
+    "公用事业": "XLU",
 
-    # --- 加密货币 (独立列示) ---
-    "比特币 (BTC)": "BTC-USD",
-    "以太坊 (ETH)": "ETH-USD",
+    # --- 加密货币 ---
+    "比特币": "BTC-USD",
+    "以太坊": "ETH-USD",
 
     # --- 大宗商品 ---
-    "黄金 (GLD)": "GLD",
-    "白银 (SLV)": "SLV",
-    "铜矿 (COPX)": "COPX",
-    "原油 (USO)": "USO",
-    "天然气 (UNG)": "UNG",
-    "铀矿 (URA)": "URA",
+    "黄金": "GLD",
+    "白银": "SLV",
+    "铜矿": "COPX",
+    "原油": "USO",
+    "天然气": "UNG",
+    "铀矿": "URA",
 
     # --- 利率与外汇 ---
-    "美元指数 (UUP)": "UUP",
-    "日元 (FXY)": "FXY",
-    "20年美债 (TLT)": "TLT",
-    "高收益债 (HYG)": "HYG"
+    "美元指数": "UUP",
+    "日元": "FXY",
+    "20年美债": "TLT",
+    "高收益债": "HYG"
 }
 
-# --- 2. 核心数据引擎 (10年视野 / 1年滚动) ---
+# --- 2. 核心数据引擎 ---
 @st.cache_data(ttl=3600*12) 
 def get_market_data(tickers):
     end_date = datetime.now()
@@ -90,7 +90,7 @@ def get_market_data(tickers):
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
             for date in display_dates:
-                # Rolling 1 Year Window
+                # Rolling 1 Year
                 window_price = series_price.loc[:date].tail(rolling_window)
                 window_vol = series_vol.loc[:date].tail(rolling_window)
                 
@@ -107,7 +107,7 @@ def get_market_data(tickers):
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
                 
-                # Momentum (4 Weeks)
+                # Momentum
                 lookback_date = date - timedelta(weeks=4)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -181,21 +181,16 @@ if not df_anim.empty:
     fig.layout.updatemenus = [dict(
         type="buttons", showactive=False, direction="left", x=0.0, y=-0.15,
         buttons=[
-            dict(label="⏪ 历史回放", method="animate", args=[all_dates[::-1], settings_fast]), # 倒放更有用，叫"历史回放"
+            dict(label="⏪ 历史回放", method="animate", args=[all_dates[::-1], settings_fast]),
             dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])
         ]
     )]
 
-    # --- 核心修改：强制默认显示最后一帧 (Show Latest) ---
-    # 1. 把图表的初始数据 (data) 替换为最后一帧的数据
-    if len(fig.frames) > 0:
-        last_frame_data = fig.frames[-1].data
-        fig.data = last_frame_data
-    
-    # 2. 把 Slider 的滑块位置设为最后一个
+    # --- 修复：不替换 fig.data (避免报错)，只把滑块移到最后 ---
+    # Plotly 默认渲染第一帧，通过 JS 自动播放最稳，但 Streamlit 不支持注入复杂 JS。
+    # 这里我们把滑块位置设为最后，给用户视觉暗示。
     fig.layout.sliders[0].active = len(all_dates) - 1
     
-    # Slider 样式
     fig.layout.sliders[0].currentvalue.prefix = "" 
     fig.layout.sliders[0].currentvalue.font.size = 20
     fig.layout.sliders[0].pad = {"t": 50} 
@@ -209,15 +204,14 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 4. 局限性说明 ---
+    # 局限性说明
     with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
         st.markdown("""
-        * **滚动窗口 (Rolling Window):** Z-Score 基于资产**过去 1 年 (252交易日)** 的均值和波动率计算。反映的是“相对过去一年的贵贱”，而非历史绝对底部。
-        * **数据源:** 使用 Yahoo Finance 免费接口。
-        * **BTC/ETH:** 作为高波动资产，其 Z-Score 波动范围可能远超传统资产，请关注相对位置。
+        * **滚动窗口 (Rolling 1-Year):** Z-Score 基于资产过去 1 年的均值计算。
+        * **数据源:** Yahoo Finance 免费接口，仅供宏观参考。
         """)
 
-    # --- 5. 静态表格 (双色) ---
+    # 静态表格
     st.markdown("### 📊 最新数据快照")
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
