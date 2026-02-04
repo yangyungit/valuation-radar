@@ -5,8 +5,8 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import pytz
 
-# --- 1. 极简配置 ---
-st.set_page_config(page_title="宏观雷达 (最终修正版)", layout="wide")
+# --- 1. 基础配置 ---
+st.set_page_config(page_title="宏观雷达 (最终布局版)", layout="wide")
 
 ASSETS = {
     "标普500": "SPY", "纳指100": "QQQ", "罗素小盘": "IWM",
@@ -23,15 +23,14 @@ ASSETS = {
     "军工": "ITA", "铀矿(核能)": "URA"
 }
 
-# --- 2. 核心引擎 (10年视野 / 1年滚动) ---
+# --- 2. 核心数据引擎 (10年视野 / 1年滚动) ---
 @st.cache_data(ttl=3600*12) 
 def get_market_data(tickers):
     end_date = datetime.now()
-    # 下载 11 年数据 (10年展示 + 1年滚动基准)
     start_date = end_date - timedelta(days=365*11)
     
     display_years = 10
-    rolling_window = 252 # 滚动 1 年 (交易日)
+    rolling_window = 252 # 滚动 1 年
     
     status_text = st.empty()
     status_text.text(f"📥 正在构建10年情绪图谱 (基准: 滚动1年)...")
@@ -62,7 +61,7 @@ def get_market_data(tickers):
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
             for date in display_dates:
-                # Rolling 1 Year Calculation
+                # Rolling 1 Year
                 window_price = series_price.loc[:date].tail(rolling_window)
                 window_vol = series_vol.loc[:date].tail(rolling_window)
                 
@@ -75,11 +74,11 @@ def get_market_data(tickers):
                 
                 if p_std == 0: continue
 
-                # 1. Price Z-Score
+                # Z-Score
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
                 
-                # 2. Momentum (1 Month / 4 Weeks)
+                # Momentum (1 Month)
                 lookback_date = date - timedelta(weeks=4)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -89,7 +88,7 @@ def get_market_data(tickers):
                     else: momentum = 0
                 except: momentum = 0
                 
-                # 3. Volume Z-Score
+                # Vol Z-Score
                 vol_val = vol_weekly.loc[date]
                 vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
                 
@@ -140,16 +139,18 @@ if not df_anim.empty:
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
+    # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 拥挤/主升", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 爆发/抢筹", showarrow=False, font=dict(color="#00FF00"))
     fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 崩盘/主跌", showarrow=False, font=dict(color="orange"))
 
+    # 动画控件
     settings_normal = dict(frame=dict(duration=200, redraw=True), fromcurrent=True)
     settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
 
     fig.layout.updatemenus = [dict(
-        type="buttons", showactive=False, direction="left", x=0.0, y=-0.1,
+        type="buttons", showactive=False, direction="left", x=0.0, y=-0.15, # 按钮稍微往下挪一点
         buttons=[
             dict(label="⏪ 倒放", method="animate", args=[all_dates[::-1], settings_fast]),
             dict(label="▶️ 播放", method="animate", args=[None, settings_normal]),
@@ -158,54 +159,51 @@ if not df_anim.empty:
         ]
     )]
 
+    # 进度条样式微调
     fig.layout.sliders[0].currentvalue.prefix = "" 
     fig.layout.sliders[0].currentvalue.font.size = 20
-    fig.layout.sliders[0].pad.t = 20
+    
+    # --- 核心修改：布局调整 ---
+    # 增加 bottom margin (b=100)，防止 Slider 挡住 X 轴的数字
+    # 增加 Slider 的 top padding (pad={"t": 50})，让它离 X 轴远一点
+    fig.layout.sliders[0].pad = {"t": 50} 
     
     fig.update_layout(
-        height=800, template="plotly_dark",
-        margin=dict(l=40, r=40, t=20, b=80)
+        height=750, template="plotly_dark",
+        margin=dict(l=40, r=40, t=20, b=100), # 底部留足空间
+        xaxis=dict(
+            visible=True, 
+            showticklabels=True, # 强制显示刻度
+            title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->"
+        ),
+        yaxis=dict(title="<-- 资金流出  |  资金流入 -->")
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 4. 静态表格 (双色修正版) ---
+    # --- 4. 局限性说明 (移到图表正下方) ---
+    with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
+        st.markdown("""
+        * **幸存者偏差：** 基于 2026 年视角选取资产，忽略了已退市资产。
+        * **滚动窗口近视：** Z-Score 基于“当时过去一年”计算，可能忽略长周期结构性变化。
+        * **正态分布假设：** 忽略了肥尾效应，-2 标准差不代表绝对物理底部。
+        * **量纲差异：** 高波资产（如BTC）与低波资产（如美债）同图展示时，Z-Score 仅代表相对自身历史的极端程度。
+        * **数据源：** Yahoo Finance 免费数据，非高频交易级精度。
+        """)
+
+    # --- 5. 静态表格 (放在最后) ---
     st.markdown("### 📊 最新数据快照")
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
     
-    # 这里我们同时应用两个颜色映射
     st.dataframe(
         df_latest[['Name', 'Z-Score', 'Momentum', 'Vol_Z', 'Price']]
         .sort_values(by="Z-Score", ascending=False)
         .style
-        .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40) # 动量：红黄绿
-        .background_gradient(subset=['Vol_Z'], cmap='Blues', vmin=0, vmax=3),       # 量能：深蓝
+        .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40) 
+        .background_gradient(subset=['Vol_Z'], cmap='Blues', vmin=0, vmax=3),
         use_container_width=True
     )
-
-    # --- 5. 局限性与方法论说明 (恢复版) ---
-    with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
-        st.markdown("""
-        ### 1. 幸存者偏差 (Survivorship Bias)
-        * **问题：** 当前资产列表是基于 **2026年** 的视角选取的。
-        * **影响：** 回看 2016 年数据时，我们看到了当时的“赢家”，但忽略了当时存在但后来退市的资产。这会导致历史回测看起来比实际情况更乐观。
-        
-        ### 2. 滚动窗口的“近视效应” (Rolling 1-Year Bias)
-        * **算法：** Z-Score 基于 **“当时的过去一年”** 计算。
-        * **局限：** 如果市场发生结构性突变（如利率中枢永久抬升），旧的均值参照系会失效。Z-Score < -2 可能不是“便宜”，而是“价值重估”。
-        
-        ### 3. 正态分布假设谬误 (Normality Assumption)
-        * **问题：** 金融市场存在 **肥尾效应 (Fat Tails)**。
-        * **现实：** Z-Score < -2 只是统计学上的低估，不代表物理上的底。极端行情下可能跌至 -5 标准差。
-        
-        ### 4. 波动率量纲差异
-        * **问题：** 比特币（高波）和美债（低波）在同一坐标系。
-        * **提醒：** 位置代表的是“相对自身历史的极端程度”，而非绝对涨幅。
-        
-        ### 5. 数据源精度
-        * 数据源为 Yahoo Finance 免费接口，仅供宏观趋势参考，不适用于高频交易。
-        """)
 
 else:
     st.info("数据下载中，请稍候...")
