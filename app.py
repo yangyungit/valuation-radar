@@ -5,54 +5,115 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import pytz
 
-# --- 1. 基础配置 ---
-st.set_page_config(page_title="宏观雷达 (最终布局版)", layout="wide")
+# --- 1. 资产池架构 (分层设计) ---
+st.set_page_config(page_title="宏观雷达 (显微镜版)", layout="wide")
 
-ASSETS = {
+# 层级 1: 全球宏观 (只看指数/ETF/大类)
+MACRO_ASSETS = {
     "标普500": "SPY", "纳指100": "QQQ", "罗素小盘": "IWM",
-    "中概互联": "KWEB", "中国大盘(FXI)": "FXI", "日本股市": "EWJ",
-    "印度股市": "INDA", "欧洲股市": "VGK", "越南股市": "VNM",
+    "中概互联": "KWEB", "中国大盘": "FXI", "日本股市": "EWJ",
+    "印度股市": "INDA", "越南股市": "VNM", "欧洲股市": "VGK",
     "黄金": "GLD", "白银": "SLV", "铜矿": "COPX",
-    "原油": "USO", "天然气": "UNG", "美元指数": "UUP", "日元": "FXY",
+    "原油": "USO", "天然气": "UNG", "美元指数": "UUP", 
     "半导体": "SMH", "科技": "XLK", "金融": "XLF",
     "能源": "XLE", "医疗": "XLV", "工业": "XLI",
-    "房地产": "XLRE", "消费": "XLY",
-    "20年美债": "TLT", "高收益债": "HYG",
-    "比特币": "BTC-USD", "以太坊": "ETH-USD",
-    "人工智能": "BOTZ", "网络安全": "CIBR", "生物科技": "XBI",
-    "军工": "ITA", "铀矿(核能)": "URA"
+    "比特币": "BTC-USD", "以太坊": "ETH-USD", "20年美债": "TLT"
 }
 
-# --- 2. 核心数据引擎 (10年视野 / 1年滚动) ---
+# 层级 2: 细分赛道 (龙头拆解)
+SECTOR_DRILLDOWN = {
+    "🤖 拆解：半导体 & AI": {
+        "英伟达 (算力王)": "NVDA", "台积电 (代工王)": "TSM",
+        "博通 (网络)": "AVGO", "AMD (老二)": "AMD",
+        "英特尔 (老兵)": "INTC", "美光 (存储)": "MU",
+        "ARM (架构)": "ARM", "超微电脑 (服务器)": "SMCI",
+        "ASML (光刻机)": "ASML", "半导体指数(基准)": "SMH"
+    },
+    "🐉 拆解：中国核心资产": {
+        "腾讯 (港股)": "0700.HK", "阿里 (电商)": "BABA",
+        "拼多多 (卷王)": "PDD", "美团 (本地)": "3690.HK",
+        "京东 (物流)": "JD", "百度 (AI)": "BIDU",
+        "网易 (游戏)": "NTES", "携程 (旅游)": "TCOM",
+        "贝壳 (房产)": "BEKE", "中概互联(基准)": "KWEB"
+    },
+    "bf 拆解：加密货币": {
+        "比特币 (大饼)": "BTC-USD", "以太坊 (二饼)": "ETH-USD",
+        "Solana (新贵)": "SOL-USD", "BNB (平台)": "BNB-USD",
+        "XRP (瑞波)": "XRP-USD", "Dogecoin (狗)": "DOGE-USD",
+        "Cardano": "ADA-USD", "Avalanche": "AVAX-USD",
+        "Chainlink": "LINK-USD", "纳指(基准)": "QQQ"
+    },
+    "🛢️ 拆解：大宗与资源": {
+        "黄金 (避险)": "GLD", "白银 (工业)": "SLV",
+        "铜矿 (周期)": "COPX", "原油 (能源)": "USO",
+        "天然气 (波动)": "UNG", "铀矿 (核能)": "URA",
+        "锂矿 (电池)": "LIT", "农业 (粮食)": "DBA",
+        "稀土 (战略)": "REMX", "美元(基准)": "UUP"
+    }
+}
+
+# --- 2. 侧边栏：显微镜控制台 ---
+with st.sidebar:
+    st.header("🔬 显微镜控制台")
+    view_mode = st.radio(
+        "选择观测层级",
+        ["🌍 全球宏观 (上帝视角)"] + list(SECTOR_DRILLDOWN.keys()),
+        index=0
+    )
+    
+    # 动态决定用哪个资产池
+    if view_mode == "🌍 全球宏观 (上帝视角)":
+        CURRENT_ASSETS = MACRO_ASSETS
+        st.info("当前模式：对比全球大类资产的轮动。")
+    else:
+        CURRENT_ASSETS = SECTOR_DRILLDOWN[view_mode]
+        st.warning(f"当前模式：正在深入 {view_mode} 内部，对比龙头强弱。")
+
+# --- 3. 核心引擎 (通用版) ---
 @st.cache_data(ttl=3600*12) 
-def get_market_data(tickers):
+def get_market_data(tickers_dict):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365*11)
     
     display_years = 10
-    rolling_window = 252 # 滚动 1 年
+    rolling_window = 252 
     
+    # 动态显示状态
     status_text = st.empty()
-    status_text.text(f"📥 正在构建10年情绪图谱 (基准: 滚动1年)...")
+    status_text.text(f"📥 正在拉取 {len(tickers_dict)} 个标的数据...")
     
     try:
-        data = yf.download(list(tickers.values()), start=start_date, end=end_date, progress=False, auto_adjust=True)
-        raw_close = data['Close']
-        raw_volume = data['Volume']
-    except:
+        # 提取代码列表
+        symbol_list = list(tickers_dict.values())
+        data = yf.download(symbol_list, start=start_date, end=end_date, progress=False, auto_adjust=True)
+        
+        # 兼容性处理：如果只下载一个标的，yf返回的格式不同
+        if len(symbol_list) == 1:
+            raw_close = data[['Close']] # 保持DataFrame格式
+            raw_volume = data[['Volume']]
+            # 重命名列以匹配多标的格式
+            raw_close.columns = symbol_list
+            raw_volume.columns = symbol_list
+        else:
+            raw_close = data['Close']
+            raw_volume = data['Volume']
+            
+    except Exception as e:
         return pd.DataFrame() 
     
-    status_text.text("⚡ 正在清洗量价因子...")
+    status_text.text("⚡ 正在计算相对强弱与情绪...")
     
     processed_dfs = []
     
-    for name, ticker in tickers.items():
+    for name, ticker in tickers_dict.items():
         try:
             if ticker not in raw_close.columns: continue
             
             series_price = raw_close[ticker].dropna()
             series_vol = raw_volume[ticker].dropna()
-            if len(series_price) < rolling_window + 60: continue
+            
+            # 允许稍短一点的数据进入（为了兼容新上市的龙头）
+            if len(series_price) < rolling_window + 20: continue
 
             price_weekly = series_price.resample('W-FRI').last()
             vol_weekly = series_vol.resample('W-FRI').mean()
@@ -61,11 +122,11 @@ def get_market_data(tickers):
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
             for date in display_dates:
-                # Rolling 1 Year
+                # Rolling Window
                 window_price = series_price.loc[:date].tail(rolling_window)
                 window_vol = series_vol.loc[:date].tail(rolling_window)
                 
-                if len(window_price) < rolling_window * 0.9: continue
+                if len(window_price) < rolling_window * 0.8: continue # 稍微放宽要求
                 
                 p_mean = window_price.mean()
                 p_std = window_price.std()
@@ -78,7 +139,7 @@ def get_market_data(tickers):
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
                 
-                # Momentum (1 Month)
+                # Momentum (4 Weeks)
                 lookback_date = date - timedelta(weeks=4)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -92,6 +153,7 @@ def get_market_data(tickers):
                 vol_val = vol_weekly.loc[date]
                 vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
                 
+                # 气泡大小
                 size_metric = max(5, min(10 + (vol_z * 8), 60))
                 
                 processed_dfs.append({
@@ -111,10 +173,11 @@ def get_market_data(tickers):
         full_df = full_df.sort_values(by="Date")
     return full_df
 
-# --- 3. 页面渲染 ---
-st.title(f"🔭 宏观雷达 (10年全景·滚动1年)")
+# --- 4. 主界面渲染 ---
+st.title(f"🔭 宏观雷达: {view_mode}")
 
-df_anim = get_market_data(ASSETS)
+# 这一步是关键：根据用户的选择，重新运行数据引擎
+df_anim = get_market_data(CURRENT_ASSETS)
 
 if not df_anim.empty:
     
@@ -129,7 +192,7 @@ if not df_anim.empty:
         animation_frame="Date", animation_group="Name", 
         text="Name", hover_name="Name",
         hover_data=["Price", "Vol_Z"],
-        color="Momentum", size="Size", size_max=50, 
+        color="Momentum", size="Size", size_max=60, 
         range_x=range_x, range_y=range_y, 
         color_continuous_scale="RdYlGn", range_color=[-20, 40],
         title=""
@@ -139,7 +202,6 @@ if not df_anim.empty:
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
-    # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 拥挤/主升", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 爆发/抢筹", showarrow=False, font=dict(color="#00FF00"))
     fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
@@ -150,7 +212,7 @@ if not df_anim.empty:
     settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
 
     fig.layout.updatemenus = [dict(
-        type="buttons", showactive=False, direction="left", x=0.0, y=-0.15, # 按钮稍微往下挪一点
+        type="buttons", showactive=False, direction="left", x=0.0, y=-0.15,
         buttons=[
             dict(label="⏪ 倒放", method="animate", args=[all_dates[::-1], settings_fast]),
             dict(label="▶️ 播放", method="animate", args=[None, settings_normal]),
@@ -159,40 +221,28 @@ if not df_anim.empty:
         ]
     )]
 
-    # 进度条样式微调
     fig.layout.sliders[0].currentvalue.prefix = "" 
     fig.layout.sliders[0].currentvalue.font.size = 20
-    
-    # --- 核心修改：布局调整 ---
-    # 增加 bottom margin (b=100)，防止 Slider 挡住 X 轴的数字
-    # 增加 Slider 的 top padding (pad={"t": 50})，让它离 X 轴远一点
     fig.layout.sliders[0].pad = {"t": 50} 
     
     fig.update_layout(
         height=750, template="plotly_dark",
-        margin=dict(l=40, r=40, t=20, b=100), # 底部留足空间
-        xaxis=dict(
-            visible=True, 
-            showticklabels=True, # 强制显示刻度
-            title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->"
-        ),
+        margin=dict(l=40, r=40, t=20, b=100),
+        xaxis=dict(visible=True, showticklabels=True, title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->"),
         yaxis=dict(title="<-- 资金流出  |  资金流入 -->")
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 4. 局限性说明 (移到图表正下方) ---
+    # 局限性说明
     with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
         st.markdown("""
-        * **幸存者偏差：** 基于 2026 年视角选取资产，忽略了已退市资产。
-        * **滚动窗口近视：** Z-Score 基于“当时过去一年”计算，可能忽略长周期结构性变化。
-        * **正态分布假设：** 忽略了肥尾效应，-2 标准差不代表绝对物理底部。
-        * **量纲差异：** 高波资产（如BTC）与低波资产（如美债）同图展示时，Z-Score 仅代表相对自身历史的极端程度。
-        * **数据源：** Yahoo Finance 免费数据，非高频交易级精度。
+        * **数据源：** 使用 Yahoo Finance，部分中概股或加密货币数据可能存在延迟。
+        * **显微镜模式：** 当进入细分板块时，"基准"依然是该资产自身的历史均值，而非板块指数。这有助于发现板块内部的 Alpha（谁比谁更强）。
         """)
 
-    # --- 5. 静态表格 (放在最后) ---
-    st.markdown("### 📊 最新数据快照")
+    # 数据表格
+    st.markdown(f"### 📊 {view_mode} - 最新快照")
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
     
@@ -206,4 +256,4 @@ if not df_anim.empty:
     )
 
 else:
-    st.info("数据下载中，请稍候...")
+    st.info("💡 请在左侧选择观测层级，数据正在装填中...")
