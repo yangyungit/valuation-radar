@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="全球宏观雷达 Pro", layout="wide")
+st.set_page_config(page_title="全球宏观雷达 (月度趋势版)", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -53,11 +53,11 @@ ASSETS = {
     "铀矿(核能)": "URA"
 }
 
-# --- 2. 数据处理核心逻辑 (带轨迹版) ---
+# --- 2. 数据处理核心逻辑 (月度平滑版) ---
 @st.cache_data(ttl=3600)
-def get_market_data_with_trails(tickers):
+def get_market_data_smooth(tickers):
     current_data = []
-    trails_data = [] # 用来存尾巴的数据
+    trails_data = [] 
     
     end_date = datetime.now()
     start_date = end_date - timedelta(days=400) 
@@ -70,11 +70,10 @@ def get_market_data_with_trails(tickers):
     for name, ticker in tickers.items():
         try:
             count += 1
-            if count % 5 == 0: # 减少刷新频率
-                status_text.text(f"正在计算轨迹: {name}...")
+            if count % 5 == 0: 
+                status_text.text(f"正在计算月度趋势: {name}...")
                 progress_bar.progress(count / total)
 
-            # 获取数据
             df = yf.download(ticker, start=start_date, end=end_date, progress=False)['Close']
             
             if df.empty: continue
@@ -82,58 +81,58 @@ def get_market_data_with_trails(tickers):
             else: series = df
             
             series = series.dropna()
+            # 至少需要一年的数据做基准，加最近的波动
             if len(series) < 260: continue
 
-            # --- 计算过去 10 天的轨迹 ---
-            # 我们需要计算每天的 Z-Score 和 Momentum，这就需要一个滚动窗口
-            # 为了性能，我们只取最后 15 天切片来计算轨迹
+            # --- 核心修改：计算"月度路径" (Weekly Snapshots) ---
+            # 我们不再取最后10天，而是取过去20个交易日（约1个月），每隔5天（1周）采一个样
+            # 这样轨迹就是平滑的：4周前 -> 3周前 -> 2周前 -> 1周前 -> 现在
             
-            # 基础数据准备 (过去一年的均值和方差，作为统一标尺)
-            # 注意：为了轨迹平滑，我们固定用今天的 benchmark 来衡量过去10天的位置
-            # 这样展示的是"过去10天相对于今天的估值体系"是如何移动的
+            # 1. 计算过去一年的均值标准差作为"地图坐标系" (保持坐标系稳定)
             base_window = series.tail(252)
             mean = base_window.mean()
             std = base_window.std()
             
-            # 取最后 10 个交易日做尾巴
-            trail_window = series.tail(10)
+            # 2. 选出关键时间点 (Keyframes)
+            # indices: [-21, -16, -11, -6, -1] 对应过去4周的每周节点
+            step = 5 # 每5个交易日(一周)取一个点
+            lookback_weeks = 4
+            indices_to_plot = []
             
-            # 暂存这条尾巴的坐标
-            trail_x = [] # Z-Score 轨迹
-            trail_y = [] # Momentum 轨迹
+            # 确保数据够长
+            if len(series) < (lookback_weeks * step + 65): continue
+
+            for w in range(lookback_weeks, -1, -1): # 4, 3, 2, 1, 0
+                idx = len(series) - 1 - (w * step)
+                indices_to_plot.append(idx)
+            
+            trail_x = []
+            trail_y = []
             
             current_price = 0
             current_z = 0
             current_m = 0
 
-            # 遍历这10天，算出每一天的坐标
-            for i in range(len(trail_window)):
-                price_t = trail_window.iloc[i]
+            # 3. 遍历这些关键点计算坐标
+            for i, idx in enumerate(indices_to_plot):
+                price_t = series.iloc[idx]
                 
-                # 计算当天的 Z-Score (用统一标尺)
+                # Z-Score
                 z_t = (price_t - mean) / std
                 
-                # 计算当天的 Momentum (相对于那天之前的60天)
-                # 这里的 index 需要对应回原始 series
-                idx = trail_window.index[i]
-                loc = series.index.get_loc(idx)
-                
-                if loc > 60:
-                    price_prev = series.iloc[loc - 60]
-                    m_t = ((price_t - price_prev) / price_prev) * 100
-                else:
-                    m_t = 0
+                # Momentum (相对于那个时间点之前的60天)
+                price_prev = series.iloc[idx - 60]
+                m_t = ((price_t - price_prev) / price_prev) * 100
                 
                 trail_x.append(z_t)
                 trail_y.append(m_t)
                 
-                # 记录最后一个点作为"当前点"
-                if i == len(trail_window) - 1:
+                # 最后一个点是"现在"
+                if i == len(indices_to_plot) - 1:
                     current_price = price_t
                     current_z = z_t
                     current_m = m_t
 
-            # 存入列表
             current_data.append({
                 "Name": name,
                 "Z-Score": round(current_z, 2),
@@ -143,8 +142,8 @@ def get_market_data_with_trails(tickers):
             
             trails_data.append({
                 "Name": name,
-                "X": trail_x, # 这是一个列表
-                "Y": trail_y  # 这是一个列表
+                "X": trail_x,
+                "Y": trail_y 
             })
             
         except Exception as e:
@@ -158,49 +157,47 @@ def get_market_data_with_trails(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("☄️ 市场趋势雷达 (带轨迹追踪)")
-st.caption(f"数据最后更新: {update_time} | 显示过去 10 个交易日的运动轨迹")
+st.title("🌪️ 宏观趋势雷达 (Monthly Trend)")
+st.caption(f"数据更新: {update_time} | 轨迹显示：过去1个月的路径 (每周采样)")
 
-# 侧边栏控制
-show_trails = st.sidebar.checkbox("显示运动轨迹 (Comet Tails)", value=True)
+show_trails = st.sidebar.checkbox("显示月度路径", value=True)
 
-df_now, trails = get_market_data_with_trails(ASSETS)
+df_now, trails = get_market_data_smooth(ASSETS)
 
 if not df_now.empty:
     fig = go.Figure()
 
-    # --- A. 画尾巴 (轨迹线) ---
+    # --- A. 画平滑轨迹 ---
     if show_trails:
         for trail in trails:
-            # 获取该资产当前的动量，用于给尾巴上色
-            # 逻辑：动量越高越红，越低越绿。尾巴颜色稍微淡一点
             curr_mom = trail['Y'][-1]
             
-            # 简单的颜色逻辑
-            color = "rgba(200, 200, 200, 0.3)" # 默认灰色半透明
-            if curr_mom > 5: color = "rgba(255, 100, 100, 0.5)" # 红
-            elif curr_mom < -5: color = "rgba(100, 255, 100, 0.5)" # 绿
+            # 颜色逻辑：动量高红，低绿
+            color = "rgba(200, 200, 200, 0.2)" # 默认极淡的灰色
+            if curr_mom > 5: color = "rgba(255, 80, 80, 0.4)" # 红
+            elif curr_mom < -5: color = "rgba(80, 255, 80, 0.4)" # 绿
             
+            # 画线 (平滑的月度路径)
             fig.add_trace(go.Scatter(
                 x=trail['X'],
                 y=trail['Y'],
-                mode='lines',
-                line=dict(color=color, width=1), # 细线
-                hoverinfo='skip', # 尾巴不显示悬停信息，太乱
+                mode='lines', # 纯线
+                line=dict(color=color, width=1.5), # 稍微加粗一点点
+                hoverinfo='skip',
                 showlegend=False
             ))
             
-            # 在尾巴的起点（10天前）画个小点，方便看方向
+            # 起点标记 (一个月前在哪里)
             fig.add_trace(go.Scatter(
                 x=[trail['X'][0]],
                 y=[trail['Y'][0]],
                 mode='markers',
-                marker=dict(size=3, color=color),
+                marker=dict(size=2, color=color),
                 hoverinfo='skip',
                 showlegend=False
             ))
 
-    # --- B. 画现在的点 (大球) ---
+    # --- B. 画当前点 ---
     fig.add_trace(go.Scatter(
         x=df_now['Z-Score'],
         y=df_now['Momentum'],
@@ -208,12 +205,12 @@ if not df_now.empty:
         text=df_now['Name'],
         textposition="top center",
         marker=dict(
-            size=14,
+            size=16, # 球大一点
             color=df_now['Momentum'], 
             colorscale='RdYlGn', 
             showscale=True,
-            colorbar=dict(title="当前资金热度"),
-            line=dict(color='black', width=1) # 给球加个黑边，更清楚
+            colorbar=dict(title="资金热度"),
+            line=dict(color='black', width=1)
         ),
         hovertemplate="<b>%{text}</b><br>Z-Score: %{x}<br>3月涨跌: %{y}%<extra></extra>"
     ))
@@ -223,10 +220,10 @@ if not df_now.empty:
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
     annotations = [
-        dict(x=3.2, y=35, text="<b>🔥 拥挤/泡沫</b>", showarrow=False, font=dict(color="red", size=14)),
-        dict(x=-3.2, y=35, text="<b>💎 捡漏/爆发</b>", showarrow=False, font=dict(color="#00FF00", size=14)),
-        dict(x=-3.2, y=-35, text="<b>🧊 冷宫/菜市场</b>", showarrow=False, font=dict(color="gray", size=14)),
-        dict(x=3.2, y=-35, text="<b>⚠️ 崩盘/陷阱</b>", showarrow=False, font=dict(color="orange", size=14))
+        dict(x=3.2, y=40, text="<b>🔥 拥挤/泡沫</b>", showarrow=False, font=dict(color="red", size=14)),
+        dict(x=-3.2, y=40, text="<b>💎 捡漏/爆发</b>", showarrow=False, font=dict(color="#00FF00", size=14)),
+        dict(x=-3.2, y=-40, text="<b>🧊 冷宫/菜市场</b>", showarrow=False, font=dict(color="gray", size=14)),
+        dict(x=3.2, y=-40, text="<b>⚠️ 崩盘/陷阱</b>", showarrow=False, font=dict(color="orange", size=14))
     ]
     fig.update_layout(annotations=annotations)
 
@@ -243,6 +240,7 @@ if not df_now.empty:
     st.plotly_chart(fig, use_container_width=True)
     
     with st.expander("查看详细数据表"):
+        # 表格修复了，这里会正常显示
         st.dataframe(df_now.sort_values(by="Z-Score", ascending=False).style.background_gradient(subset=['Momentum'], cmap='RdYlGn'), use_container_width=True)
 
 else:
