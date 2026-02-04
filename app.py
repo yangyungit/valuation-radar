@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="宏观真理雷达 (Truth Radar)", layout="wide")
+st.set_page_config(page_title="宏观真理雷达 (同步修复版)", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -65,7 +65,6 @@ def get_market_animation_data(tickers):
     ticker_list = list(tickers.values())
     try:
         status_text.text("正在拉取 10 年量价数据 (Price & Volume)...")
-        # 这里的 auto_adjust=True 很关键，保证价格和成交量都复权
         data = yf.download(ticker_list, start=start_date, end=end_date, progress=False, auto_adjust=True)
         raw_close = data['Close']
         raw_volume = data['Volume']
@@ -88,25 +87,20 @@ def get_market_animation_data(tickers):
             if ticker not in raw_close.columns:
                 continue
             
-            # 价格序列
             series_price = raw_close[ticker].dropna()
-            # 成交量序列
             series_vol = raw_volume[ticker].dropna()
             
             if len(series_price) < 260: continue
 
-            # 重采样为"周"
             price_weekly = series_price.resample('W-FRI').last()
-            vol_weekly = series_vol.resample('W-FRI').mean() # 成交量取周均值
+            vol_weekly = series_vol.resample('W-FRI').mean()
             
             target_start_date = end_date - timedelta(days=365*10)
             display_idx = price_weekly.index >= target_start_date
             
-            # 只遍历显示时间段
             display_dates = price_weekly[display_idx].index
             
             for date in display_dates:
-                # --- 1. 价格 Z-Score (Rolling 1 Year) ---
                 past_year_price = series_price.loc[:date].tail(252)
                 if len(past_year_price) < 100: continue
                 
@@ -117,7 +111,6 @@ def get_market_animation_data(tickers):
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
                 
-                # --- 2. 动量 (3 Month) ---
                 lookback_date = date - timedelta(weeks=12)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -129,9 +122,6 @@ def get_market_animation_data(tickers):
                     else: momentum = 0
                 except: momentum = 0
                 
-                # --- 3. 关键洞察：成交量异动 (Volume Z-Score) ---
-                # 逻辑：判断当前的成交量相对于过去一年是否显著放大
-                # 如果 Price 高 + Volume 高 = 结构性确认 (Structural Confirmation)
                 past_year_vol = series_vol.loc[:date].tail(252)
                 v_mean = past_year_vol.mean()
                 v_std = past_year_vol.std()
@@ -142,11 +132,8 @@ def get_market_animation_data(tickers):
                 else:
                     vol_z = 0
                 
-                # 处理一下 Size，让它视觉上更明显但不过分
-                # 基础大小 10，每增加 1个标准差的放量，球变大 5
-                # 限制最大最小值
                 size_metric = 10 + (vol_z * 8) 
-                size_metric = max(5, min(size_metric, 50)) # 最小5，最大50
+                size_metric = max(5, min(size_metric, 50))
                 
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'), 
@@ -154,7 +141,7 @@ def get_market_animation_data(tickers):
                     "Ticker": ticker,
                     "Z-Score": round(z_score, 2),
                     "Momentum": round(momentum, 2),
-                    "Vol_Z": round(vol_z, 2), # 记录下来备查
+                    "Vol_Z": round(vol_z, 2),
                     "Price": round(price_val, 2),
                     "Size": size_metric 
                 })
@@ -173,8 +160,8 @@ def get_market_animation_data(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("👁️ 宏观真理雷达 (Volume-Adjusted)")
-st.caption(f"洞察核心：**球体大小** 代表 **成交量异动 (Volume Anomaly)**。球越大，上涨越真实。")
+st.title("👁️ 宏观真理雷达 (时间轴修复版)")
+st.caption(f"洞察核心：**球体大小** 代表 **成交量异动**。时间轴现已完美同步。")
 
 df_anim = get_market_animation_data(ASSETS)
 
@@ -196,8 +183,8 @@ if not df_anim.empty:
         hover_name="Name",
         hover_data=["Price", "Ticker", "Vol_Z"],
         color="Momentum", 
-        size="Size", # 核心修改：大小由成交量决定
-        size_max=45, # 调整最大气泡
+        size="Size", 
+        size_max=45, 
         range_x=[-4.5, 4.5], 
         range_y=[-60, 80], 
         color_continuous_scale="RdYlGn",
@@ -207,13 +194,12 @@ if not df_anim.empty:
 
     fig.update_traces(
         textposition='top center', 
-        marker=dict(line=dict(width=1, color='black')) # 黑边让大气泡更清楚
+        marker=dict(line=dict(width=1, color='black')) 
     )
     
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
-    # 标注修改，增加对 Size 的解读
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", 
                        text="🔥 拥挤区<br>(大球=新范式)<br>(小球=假泡沫)", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", 
@@ -222,6 +208,7 @@ if not df_anim.empty:
     animation_settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
     animation_settings_slow = dict(frame=dict(duration=500, redraw=True), fromcurrent=True)
 
+    # --- 关键修改：只更新按钮，不再覆盖 sliders ---
     fig.layout.updatemenus = [
         dict(
             type="buttons",
@@ -237,14 +224,23 @@ if not df_anim.empty:
             ]
         )
     ]
+    
+    # --- 修复逻辑：访问现有的 slider 并修改它，而不是替换它 ---
+    try:
+        # Plotly Express 自动生成的 slider 通常是列表中的第一个
+        if fig.layout.sliders:
+            fig.layout.sliders[0].currentvalue.prefix = "当前时间: "
+            fig.layout.sliders[0].pad.t = 50 # 增加一点顶部间距防止重叠
+    except:
+        pass # 如果万一没有slider，就不改了，防止报错
 
     fig.update_layout(
         height=850,
         template="plotly_dark",
         xaxis_title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->",
         yaxis_title="<-- 资金流出  |  资金流入 -->",
-        margin=dict(l=40, r=40, t=40, b=40),
-        sliders=[dict(currentvalue={"prefix": "时间: "}, pad={"t": 50})]
+        margin=dict(l=40, r=40, t=40, b=40)
+        # 注意：这里删除了 sliders=[...] 那一行
     )
 
     st.plotly_chart(fig, use_container_width=True)
@@ -256,17 +252,14 @@ if not df_anim.empty:
         **1. 结构性牛市 (The Paradigm Shift)**
         * **现象：** 资产处于右上角（Z-Score > 2），但气泡**异常巨大**。
         * **解读：** 尽管价格很贵，但成交量也在通过历史极值。说明市场不仅接受了这个价格，还在疯狂涌入。**这是新钱在把旧钱洗出去，新周期开启。**
-        * **操作：** 忽略估值恐高，顺势而为。
         
         **2. 虚假繁荣 (The Bull Trap)**
         * **现象：** 资产处于右上角，但气泡**非常小**。
-        * **解读：** 价格是被少量资金“买”上去的（缩量上涨）。市场参与者内心并不认可这个价格，只是没人卖而已。
-        * **操作：** 极度危险。一旦有风吹草动，流动性瞬间枯竭，价格会崩塌。
+        * **解读：** 价格是被少量资金“买”上去的（缩量上涨）。极度危险。
         
         **3. 底部吸筹 (Accumulation)**
         * **现象：** 资产处于左下角（冷宫），但气泡**突然变大**。
-        * **解读：** 价格还没涨，但有人在暗中大量吃货。
-        * **操作：** 最佳的左侧建仓点。
+        * **解读：** 价格还没涨，但有人在暗中大量吃货。最佳左侧建仓点。
         """)
 
     latest_date = df_anim['Date'].iloc[-1]
@@ -275,7 +268,7 @@ if not df_anim.empty:
     st.dataframe(
         df_latest[['Name', 'Ticker', 'Price', 'Z-Score', 'Momentum', 'Vol_Z']]
         .sort_values(by="Z-Score", ascending=False)
-        .style.background_gradient(subset=['Vol_Z'], cmap='Blues'), # 用蓝色深浅表示成交量异动
+        .style.background_gradient(subset=['Vol_Z'], cmap='Blues'), 
         use_container_width=True
     )
 
