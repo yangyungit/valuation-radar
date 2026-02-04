@@ -5,115 +5,83 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import pytz
 
-# --- 1. 资产池架构 (分层设计) ---
-st.set_page_config(page_title="宏观雷达 (显微镜版)", layout="wide")
+# --- 1. 纯净宏观资产池 (板块/指数级) ---
+st.set_page_config(page_title="宏观雷达 (纯净板块版)", layout="wide")
 
-# 层级 1: 全球宏观 (只看指数/ETF/大类)
-MACRO_ASSETS = {
-    "标普500": "SPY", "纳指100": "QQQ", "罗素小盘": "IWM",
-    "中概互联": "KWEB", "中国大盘": "FXI", "日本股市": "EWJ",
-    "印度股市": "INDA", "越南股市": "VNM", "欧洲股市": "VGK",
-    "黄金": "GLD", "白银": "SLV", "铜矿": "COPX",
-    "原油": "USO", "天然气": "UNG", "美元指数": "UUP", 
-    "半导体": "SMH", "科技": "XLK", "金融": "XLF",
-    "能源": "XLE", "医疗": "XLV", "工业": "XLI",
-    "比特币": "BTC-USD", "以太坊": "ETH-USD", "20年美债": "TLT"
-}
+ASSETS = {
+    # --- 权益类：全球核心市场 ---
+    "🇺🇸 标普500 (美股基准)": "SPY",
+    "🇺🇸 纳指100 (科技成长)": "QQQ",
+    "🇺🇸 罗素2000 (小盘股)": "IWM",
+    "🇨🇳 中概互联 (中国科技)": "KWEB",
+    "🇨🇳 中国大盘 (FXI)": "FXI",
+    "🇯🇵 日本股市": "EWJ",
+    "🇮🇳 印度股市": "INDA",
+    "🇪🇺 欧洲股市": "VGK",
+    "🇻🇳 越南股市": "VNM",
 
-# 层级 2: 细分赛道 (龙头拆解)
-SECTOR_DRILLDOWN = {
-    "🤖 拆解：半导体 & AI": {
-        "英伟达 (算力王)": "NVDA", "台积电 (代工王)": "TSM",
-        "博通 (网络)": "AVGO", "AMD (老二)": "AMD",
-        "英特尔 (老兵)": "INTC", "美光 (存储)": "MU",
-        "ARM (架构)": "ARM", "超微电脑 (服务器)": "SMCI",
-        "ASML (光刻机)": "ASML", "半导体指数(基准)": "SMH"
-    },
-    "🐉 拆解：中国核心资产": {
-        "腾讯 (港股)": "0700.HK", "阿里 (电商)": "BABA",
-        "拼多多 (卷王)": "PDD", "美团 (本地)": "3690.HK",
-        "京东 (物流)": "JD", "百度 (AI)": "BIDU",
-        "网易 (游戏)": "NTES", "携程 (旅游)": "TCOM",
-        "贝壳 (房产)": "BEKE", "中概互联(基准)": "KWEB"
-    },
-    "bf 拆解：加密货币": {
-        "比特币 (大饼)": "BTC-USD", "以太坊 (二饼)": "ETH-USD",
-        "Solana (新贵)": "SOL-USD", "BNB (平台)": "BNB-USD",
-        "XRP (瑞波)": "XRP-USD", "Dogecoin (狗)": "DOGE-USD",
-        "Cardano": "ADA-USD", "Avalanche": "AVAX-USD",
-        "Chainlink": "LINK-USD", "纳指(基准)": "QQQ"
-    },
-    "🛢️ 拆解：大宗与资源": {
-        "黄金 (避险)": "GLD", "白银 (工业)": "SLV",
-        "铜矿 (周期)": "COPX", "原油 (能源)": "USO",
-        "天然气 (波动)": "UNG", "铀矿 (核能)": "URA",
-        "锂矿 (电池)": "LIT", "农业 (粮食)": "DBA",
-        "稀土 (战略)": "REMX", "美元(基准)": "UUP"
-    }
-}
+    # --- 权益类：核心行业板块 ---
+    "🤖 AI与机器人": "BOTZ",     # AI 独立板块
+    "💾 半导体": "SMH",          # 半导体 独立板块
+    "💻 传统科技 (XLK)": "XLK",
+    "💰 金融 (XLF)": "XLF",
+    "⚡ 能源 (XLE)": "XLE",
+    "💊 医疗 (XLV)": "XLV",
+    "🏭 工业 (XLI)": "XLI",
+    "🏠 房地产 (XLRE)": "XLRE",
+    "🛍️ 消费 (XLY)": "XLY",
+    "💡 公用事业 (XLU)": "XLU",
 
-# --- 2. 侧边栏：显微镜控制台 ---
-with st.sidebar:
-    st.header("🔬 显微镜控制台")
-    view_mode = st.radio(
-        "选择观测层级",
-        ["🌍 全球宏观 (上帝视角)"] + list(SECTOR_DRILLDOWN.keys()),
-        index=0
-    )
+    # --- 大宗商品与资源 ---
+    "🥇 黄金 (避险)": "GLD",
+    "🥈 白银 (工业)": "SLV",
+    "⛏️ 铜矿 (周期)": "COPX",
+    "🛢️ 原油 (能源)": "USO",
+    "🔥 天然气": "UNG",
+    "☢️ 铀矿 (核能)": "URA",
+
+    # --- 另类资产与货币 ---
+    "₿ 加密货币 (Crypto)": "BTC-USD", # 用BTC代表整个板块Beta
+    "💵 美元指数": "UUP",
+    "💴 日元": "FXY",
     
-    # 动态决定用哪个资产池
-    if view_mode == "🌍 全球宏观 (上帝视角)":
-        CURRENT_ASSETS = MACRO_ASSETS
-        st.info("当前模式：对比全球大类资产的轮动。")
-    else:
-        CURRENT_ASSETS = SECTOR_DRILLDOWN[view_mode]
-        st.warning(f"当前模式：正在深入 {view_mode} 内部，对比龙头强弱。")
+    # --- 利率与债券 ---
+    "📉 20年美债 (长债)": "TLT",
+    "🧨 高收益债 (垃圾债)": "HYG"
+}
 
-# --- 3. 核心引擎 (通用版) ---
+# --- 2. 核心数据引擎 (10年视野 / 1年滚动) ---
 @st.cache_data(ttl=3600*12) 
-def get_market_data(tickers_dict):
+def get_market_data(tickers):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365*11)
     
+    # 你的核心逻辑：看10年历史，用1年均线做尺子
     display_years = 10
-    rolling_window = 252 
+    rolling_window = 252 # 滚动 1 年
     
-    # 动态显示状态
     status_text = st.empty()
-    status_text.text(f"📥 正在拉取 {len(tickers_dict)} 个标的数据...")
+    status_text.text(f"📥 正在扫描全球板块 (10年历史 / 滚动1年基准)...")
     
     try:
-        # 提取代码列表
-        symbol_list = list(tickers_dict.values())
-        data = yf.download(symbol_list, start=start_date, end=end_date, progress=False, auto_adjust=True)
-        
-        # 兼容性处理：如果只下载一个标的，yf返回的格式不同
-        if len(symbol_list) == 1:
-            raw_close = data[['Close']] # 保持DataFrame格式
-            raw_volume = data[['Volume']]
-            # 重命名列以匹配多标的格式
-            raw_close.columns = symbol_list
-            raw_volume.columns = symbol_list
-        else:
-            raw_close = data['Close']
-            raw_volume = data['Volume']
-            
-    except Exception as e:
+        # 批量下载
+        data = yf.download(list(tickers.values()), start=start_date, end=end_date, progress=False, auto_adjust=True)
+        raw_close = data['Close']
+        raw_volume = data['Volume']
+    except:
         return pd.DataFrame() 
     
-    status_text.text("⚡ 正在计算相对强弱与情绪...")
+    status_text.text("⚡ 正在清洗量价因子...")
     
     processed_dfs = []
     
-    for name, ticker in tickers_dict.items():
+    for name, ticker in tickers.items():
         try:
             if ticker not in raw_close.columns: continue
             
             series_price = raw_close[ticker].dropna()
             series_vol = raw_volume[ticker].dropna()
-            
-            # 允许稍短一点的数据进入（为了兼容新上市的龙头）
-            if len(series_price) < rolling_window + 20: continue
+            if len(series_price) < rolling_window + 60: continue
 
             price_weekly = series_price.resample('W-FRI').last()
             vol_weekly = series_vol.resample('W-FRI').mean()
@@ -122,11 +90,11 @@ def get_market_data(tickers_dict):
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
             for date in display_dates:
-                # Rolling Window
+                # Rolling 1 Year Window
                 window_price = series_price.loc[:date].tail(rolling_window)
                 window_vol = series_vol.loc[:date].tail(rolling_window)
                 
-                if len(window_price) < rolling_window * 0.8: continue # 稍微放宽要求
+                if len(window_price) < rolling_window * 0.9: continue
                 
                 p_mean = window_price.mean()
                 p_std = window_price.std()
@@ -135,11 +103,11 @@ def get_market_data(tickers_dict):
                 
                 if p_std == 0: continue
 
-                # Z-Score
+                # Z-Score (位置)
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
                 
-                # Momentum (4 Weeks)
+                # Momentum (1 Month / 4 Weeks)
                 lookback_date = date - timedelta(weeks=4)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -149,11 +117,11 @@ def get_market_data(tickers_dict):
                     else: momentum = 0
                 except: momentum = 0
                 
-                # Vol Z-Score
+                # Volume Z-Score (量能)
                 vol_val = vol_weekly.loc[date]
                 vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
                 
-                # 气泡大小
+                # 气泡大小逻辑
                 size_metric = max(5, min(10 + (vol_z * 8), 60))
                 
                 processed_dfs.append({
@@ -173,11 +141,10 @@ def get_market_data(tickers_dict):
         full_df = full_df.sort_values(by="Date")
     return full_df
 
-# --- 4. 主界面渲染 ---
-st.title(f"🔭 宏观雷达: {view_mode}")
+# --- 3. 页面渲染 ---
+st.title(f"🔭 宏观雷达 (纯净板块版)")
 
-# 这一步是关键：根据用户的选择，重新运行数据引擎
-df_anim = get_market_data(CURRENT_ASSETS)
+df_anim = get_market_data(ASSETS)
 
 if not df_anim.empty:
     
@@ -192,7 +159,7 @@ if not df_anim.empty:
         animation_frame="Date", animation_group="Name", 
         text="Name", hover_name="Name",
         hover_data=["Price", "Vol_Z"],
-        color="Momentum", size="Size", size_max=60, 
+        color="Momentum", size="Size", size_max=50, 
         range_x=range_x, range_y=range_y, 
         color_continuous_scale="RdYlGn", range_color=[-20, 40],
         title=""
@@ -202,10 +169,11 @@ if not df_anim.empty:
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
-    fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 拥挤/主升", showarrow=False, font=dict(color="red"))
-    fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 爆发/抢筹", showarrow=False, font=dict(color="#00FF00"))
-    fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
-    fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 崩盘/主跌", showarrow=False, font=dict(color="orange"))
+    # 区域标注
+    fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 主升/拥挤", showarrow=False, font=dict(color="red"))
+    fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 抢筹/爆发", showarrow=False, font=dict(color="#00FF00"))
+    fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 吸筹/冷宫", showarrow=False, font=dict(color="gray"))
+    fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 主跌/崩盘", showarrow=False, font=dict(color="orange"))
 
     # 动画控件
     settings_normal = dict(frame=dict(duration=200, redraw=True), fromcurrent=True)
@@ -234,15 +202,17 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 局限性说明
+    # --- 4. 局限性说明 (位置调整到进度条下方) ---
     with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
         st.markdown("""
-        * **数据源：** 使用 Yahoo Finance，部分中概股或加密货币数据可能存在延迟。
-        * **显微镜模式：** 当进入细分板块时，"基准"依然是该资产自身的历史均值，而非板块指数。这有助于发现板块内部的 Alpha（谁比谁更强）。
+        * **加密货币板块：** 使用 `BTC-USD` 历史数据作为整个 Crypto 板块的 Beta 代理，以保证能回溯 10 年历史（大多数加密 ETF 历史不足 5 年）。
+        * **AI 板块：** 使用 `BOTZ` (机器人与AI ETF) 作为代理。
+        * **滚动窗口：** Z-Score 基准为滚动 1 年 (252交易日)。
+        * **量纲差异：** 高波动资产（如加密货币）的 Z-Score 波动范围天生比低波动资产（如债券）更大，请关注相对位置而非绝对数值。
         """)
 
-    # 数据表格
-    st.markdown(f"### 📊 {view_mode} - 最新快照")
+    # --- 5. 静态表格 (双色) ---
+    st.markdown("### 📊 最新数据快照")
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
     
@@ -256,4 +226,4 @@ if not df_anim.empty:
     )
 
 else:
-    st.info("💡 请在左侧选择观测层级，数据正在装填中...")
+    st.info("数据下载中，请稍候...")
