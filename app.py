@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="宏观时光机 (10年珍藏版)", layout="wide")
+st.set_page_config(page_title="宏观时光机 (专业版)", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -53,11 +53,10 @@ ASSETS = {
     "铀矿(核能)": "URA"
 }
 
-# --- 2. 数据处理 (支持超长跨度) ---
-@st.cache_data(ttl=3600*12) # 缓存时间加长到12小时，因为下载10年数据比较久
+# --- 2. 数据处理 ---
+@st.cache_data(ttl=3600*12) 
 def get_market_animation_data(tickers):
     end_date = datetime.now()
-    # 下载 11 年的数据（多1年是为了计算最开始那一天的均值）
     start_date = end_date - timedelta(days=365*11) 
     
     progress_bar = st.progress(0)
@@ -65,15 +64,13 @@ def get_market_animation_data(tickers):
     
     ticker_list = list(tickers.values())
     try:
-        status_text.text("正在从华尔街搬运 10 年的历史数据 (约需30-60秒)...")
-        # auto_adjust=True 修复拆股/分红导致的价格断层
+        status_text.text("正在拉取 10 年历史数据 (约需30-60秒)...")
         raw_data = yf.download(ticker_list, start=start_date, end=end_date, progress=False, auto_adjust=True)['Close']
     except Exception as e:
-        st.error(f"数据下载失败: {e}")
         return pd.DataFrame() 
 
     progress_bar.progress(0.4)
-    status_text.text("正在进行 12 万条数据的时空清洗...")
+    status_text.text("正在进行时空清洗与滚动计算...")
 
     processed_dfs = []
     total_assets = len(tickers)
@@ -81,7 +78,6 @@ def get_market_animation_data(tickers):
 
     for name, ticker in tickers.items():
         current_asset += 1
-        # 偶尔更新一下进度条
         if current_asset % 5 == 0:
             progress_bar.progress(0.4 + (0.5 * current_asset / total_assets))
 
@@ -92,22 +88,16 @@ def get_market_animation_data(tickers):
             series = raw_data[ticker].dropna()
             if len(series) < 260: continue
 
-            # 重采样为"周" (Weekly)，减少动画帧数，保证流畅
             series_weekly = series.resample('W-FRI').last() 
-            
-            # --- 核心算法：滚动时间窗口 (Rolling Window) ---
-            # 我们只取最近 10 年的数据来展示
-            # 但每一天的 Z-Score，是基于它"当时的前一年"来计算的
             
             target_start_date = end_date - timedelta(days=365*10)
             display_series = series_weekly[series_weekly.index >= target_start_date]
             
             for date, price in display_series.items():
-                # 1. 动态 Z-Score: 获取"当时"过去一年的数据切片
-                # 这样才能还原当时的视角，不受未来涨跌影响
+                # 滚动窗口：只看过去 1 年 (252交易日)
                 past_year_slice = series.loc[:date].tail(252)
                 
-                if len(past_year_slice) < 100: continue # 数据不够不算
+                if len(past_year_slice) < 100: continue 
 
                 rolling_mean = past_year_slice.mean()
                 rolling_std = past_year_slice.std()
@@ -116,10 +106,8 @@ def get_market_animation_data(tickers):
 
                 z_score = (price - rolling_mean) / rolling_std
                 
-                # 2. 动量回溯 (3个月)
                 lookback_date = date - timedelta(weeks=12)
                 try:
-                    # 在原始日线数据里找
                     idx = series.index.searchsorted(lookback_date)
                     if idx < len(series) and idx >= 0:
                         price_prev = series.iloc[idx]
@@ -155,8 +143,8 @@ def get_market_animation_data(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("🎢 宏观时光机 (10-Year Edition)")
-st.caption(f"数据范围：过去 10 年 | 资产数：{len(ASSETS)} | 算法：滚动 Z-Score (还原历史真实估值)")
+st.title("🎢 宏观时光机 (10-Year Pro)")
+st.caption(f"数据范围：过去 10 年 | 资产数：{len(ASSETS)} | 算法：滚动 Z-Score")
 
 df_anim = get_market_animation_data(ASSETS)
 
@@ -165,7 +153,6 @@ if not df_anim.empty:
     all_dates = sorted(df_anim['Date'].unique())
     reverse_dates = all_dates[::-1]
     
-    # 算出数据起止时间，显示在界面上
     start_str = all_dates[0]
     end_str = all_dates[-1]
 
@@ -179,9 +166,8 @@ if not df_anim.empty:
         hover_name="Name",
         hover_data=["Price", "Ticker"],
         color="Momentum", 
-        # 锁定坐标轴：虽然是10年，但Z-Score是标准化的，所以坐标轴可以固定
         range_x=[-4.5, 4.5], 
-        range_y=[-60, 80], # 稍微扩大Y轴范围，10年里有些极端波动  
+        range_y=[-60, 80], 
         color_continuous_scale="RdYlGn",
         range_color=[-20, 40],
         title=f"📅 历史回放 ({start_str} 至 {end_str})"
@@ -204,10 +190,6 @@ if not df_anim.empty:
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", 
                        text="⚠️ 价值陷阱", showarrow=False, font=dict(color="orange"))
 
-    # --- 播放控制台 ---
-    # 默认速度设为 50ms (极速)，因为数据量大
-    # 用户想看细节可以用"慢放"
-    
     animation_settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
     animation_settings_slow = dict(frame=dict(duration=500, redraw=True), fromcurrent=True)
 
@@ -219,26 +201,10 @@ if not df_anim.empty:
             x=0.1, y=0, 
             pad={"r": 10, "t": 10},
             buttons=[
-                dict(
-                    label="⏪ 倒放",
-                    method="animate",
-                    args=[reverse_dates, animation_settings_fast]
-                ),
-                dict(
-                    label="▶️ 极速浏览 (10年)",
-                    method="animate",
-                    args=[None, animation_settings_fast]
-                ),
-                dict(
-                    label="🐢 慢速研究",
-                    method="animate",
-                    args=[None, animation_settings_slow]
-                ),
-                dict(
-                    label="⏸️ 暂停",
-                    method="animate",
-                    args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))]
-                )
+                dict(label="⏪ 倒放", method="animate", args=[reverse_dates, animation_settings_fast]),
+                dict(label="▶️ 极速 (10年)", method="animate", args=[None, animation_settings_fast]),
+                dict(label="🐢 慢放", method="animate", args=[None, animation_settings_slow]),
+                dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])
             ]
         )
     ]
@@ -253,6 +219,30 @@ if not df_anim.empty:
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
+    # --- 关键修改：添加专业的局限性说明 ---
+    with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
+        st.markdown("""
+        ### 1. 幸存者偏差 (Survivorship Bias)
+        * **问题：** 当前的资产列表是基于 **2026年** 的视角选取的。
+        * **影响：** 回看 2015 年数据时，我们看到了当时的“赢家”（如 Nvidia, Bitcoin），但忽略了当时存在但后来退市或破产的公司/代币（如 LUNA, FTX, 或某些退市的中概股）。这会导致历史回测看起来比实际情况更乐观。
+        
+        ### 2. 滚动窗口的“近视效应” (Rolling Window Bias)
+        * **算法：** 本图表的 Z-Score 是基于 **“当时的过去一年 (Rolling 1-Year)”** 计算的。
+        * **优点：** 还原了当时的交易员视角，避免了“未来函数”。
+        * **局限：** 如果市场发生 **结构性突变 (Structural Break)**，例如利率从 0% 永久升至 5%，旧的估值中枢会失效。此时 Z-Score = -2 可能不是“便宜”，而是“价值重估”。不要刻舟求剑。
+        
+        ### 3. 正态分布假设谬误 (Normality Assumption)
+        * **问题：** Z-Score 假设价格波动服从正态分布。
+        * **现实：** 金融市场存在 **肥尾效应 (Fat Tails)**。在黑天鹅事件中，资产价格可能会跌至 -5甚至 -10个标准差。Z-Score < -2 只是统计学上的低估，不代表物理上的底。
+        
+        ### 4. 波动率量纲差异 (Volatility Scale)
+        * **问题：** 图表中比特币（高波）和美债（低波）放在同一个坐标系中。
+        * **影响：** 美债的 Z-Score +2 可能意味着 2% 的涨幅，而比特币的 Z-Score +2 意味着 50% 的涨幅。**位置代表的是“相对自身历史的极端程度”，而不是绝对收益率。**
+        
+        ### 5. 数据源精度 (Data Quality)
+        * 数据源为 Yahoo Finance 免费接口，可能存在分红/拆股调整延迟，不适用于高频交易决策。
+        """)
 
     # 底部显示最新一期数据
     latest_date = df_anim['Date'].iloc[-1]
