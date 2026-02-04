@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 极简配置 ---
-st.set_page_config(page_title="宏观雷达 (10年全景·滚动1年)", layout="wide")
+st.set_page_config(page_title="宏观雷达 (最终修正版)", layout="wide")
 
 ASSETS = {
     "标普500": "SPY", "纳指100": "QQQ", "罗素小盘": "IWM",
@@ -23,14 +23,13 @@ ASSETS = {
     "军工": "ITA", "铀矿(核能)": "URA"
 }
 
-# --- 2. 核心引擎 (单一逻辑) ---
+# --- 2. 核心引擎 (10年视野 / 1年滚动) ---
 @st.cache_data(ttl=3600*12) 
 def get_market_data(tickers):
     end_date = datetime.now()
     # 下载 11 年数据 (10年展示 + 1年滚动基准)
     start_date = end_date - timedelta(days=365*11)
     
-    # 固定参数：这是你定的"规矩"
     display_years = 10
     rolling_window = 252 # 滚动 1 年 (交易日)
     
@@ -56,16 +55,14 @@ def get_market_data(tickers):
             series_vol = raw_volume[ticker].dropna()
             if len(series_price) < rolling_window + 60: continue
 
-            # 重采样为周线
             price_weekly = series_price.resample('W-FRI').last()
             vol_weekly = series_vol.resample('W-FRI').mean()
             
-            # 显示范围
             target_start_date = end_date - timedelta(days=365 * display_years)
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
             for date in display_dates:
-                # --- 核心算法：Rolling 1 Year ---
+                # Rolling 1 Year Calculation
                 window_price = series_price.loc[:date].tail(rolling_window)
                 window_vol = series_vol.loc[:date].tail(rolling_window)
                 
@@ -78,12 +75,11 @@ def get_market_data(tickers):
                 
                 if p_std == 0: continue
 
-                # 1. 价格位置 (Z-Score)
+                # 1. Price Z-Score
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
                 
-                # 2. 动量 (Momentum)
-                # 既然基准是1年，动量看 1个月 (4周) 最敏感匹配
+                # 2. Momentum (1 Month / 4 Weeks)
                 lookback_date = date - timedelta(weeks=4)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -93,7 +89,7 @@ def get_market_data(tickers):
                     else: momentum = 0
                 except: momentum = 0
                 
-                # 3. 成交量异动
+                # 3. Volume Z-Score
                 vol_val = vol_weekly.loc[date]
                 vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
                 
@@ -117,7 +113,7 @@ def get_market_data(tickers):
     return full_df
 
 # --- 3. 页面渲染 ---
-st.title(f"🔭 宏观雷达 (10年全景版)")
+st.title(f"🔭 宏观雷达 (10年全景·滚动1年)")
 
 df_anim = get_market_data(ASSETS)
 
@@ -125,7 +121,6 @@ if not df_anim.empty:
     
     all_dates = sorted(df_anim['Date'].unique())
     
-    # 动态范围：1年滚动基准下，Z-Score 波动一般在 -4 到 4 之间
     range_x = [-4.5, 4.5]
     range_y = [-50, 60] 
 
@@ -141,18 +136,15 @@ if not df_anim.empty:
         title=""
     )
 
-    # 视觉优化
     fig.update_traces(cliponaxis=False, textposition='top center', marker=dict(line=dict(width=1, color='black')))
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
-    # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 拥挤/主升", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 爆发/抢筹", showarrow=False, font=dict(color="#00FF00"))
     fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 崩盘/主跌", showarrow=False, font=dict(color="orange"))
 
-    # 动画控件 (极简版)
     settings_normal = dict(frame=dict(duration=200, redraw=True), fromcurrent=True)
     settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
 
@@ -166,7 +158,6 @@ if not df_anim.empty:
         ]
     )]
 
-    # 进度条优化
     fig.layout.sliders[0].currentvalue.prefix = "" 
     fig.layout.sliders[0].currentvalue.font.size = 20
     fig.layout.sliders[0].pad.t = 20
@@ -178,15 +169,43 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 静态表格
+    # --- 4. 静态表格 (双色修正版) ---
     st.markdown("### 📊 最新数据快照")
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
+    
+    # 这里我们同时应用两个颜色映射
     st.dataframe(
         df_latest[['Name', 'Z-Score', 'Momentum', 'Vol_Z', 'Price']]
         .sort_values(by="Z-Score", ascending=False)
-        .style.background_gradient(subset=['Vol_Z'], cmap='Blues'), 
+        .style
+        .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40) # 动量：红黄绿
+        .background_gradient(subset=['Vol_Z'], cmap='Blues', vmin=0, vmax=3),       # 量能：深蓝
         use_container_width=True
     )
+
+    # --- 5. 局限性与方法论说明 (恢复版) ---
+    with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
+        st.markdown("""
+        ### 1. 幸存者偏差 (Survivorship Bias)
+        * **问题：** 当前资产列表是基于 **2026年** 的视角选取的。
+        * **影响：** 回看 2016 年数据时，我们看到了当时的“赢家”，但忽略了当时存在但后来退市的资产。这会导致历史回测看起来比实际情况更乐观。
+        
+        ### 2. 滚动窗口的“近视效应” (Rolling 1-Year Bias)
+        * **算法：** Z-Score 基于 **“当时的过去一年”** 计算。
+        * **局限：** 如果市场发生结构性突变（如利率中枢永久抬升），旧的均值参照系会失效。Z-Score < -2 可能不是“便宜”，而是“价值重估”。
+        
+        ### 3. 正态分布假设谬误 (Normality Assumption)
+        * **问题：** 金融市场存在 **肥尾效应 (Fat Tails)**。
+        * **现实：** Z-Score < -2 只是统计学上的低估，不代表物理上的底。极端行情下可能跌至 -5 标准差。
+        
+        ### 4. 波动率量纲差异
+        * **问题：** 比特币（高波）和美债（低波）在同一坐标系。
+        * **提醒：** 位置代表的是“相对自身历史的极端程度”，而非绝对涨幅。
+        
+        ### 5. 数据源精度
+        * 数据源为 Yahoo Finance 免费接口，仅供宏观趋势参考，不适用于高频交易。
+        """)
+
 else:
     st.info("数据下载中，请稍候...")
