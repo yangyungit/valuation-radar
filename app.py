@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="宏观时光机 (极简版)", layout="wide")
+st.set_page_config(page_title="宏观时光机 (终极版)", layout="wide")
 
 ASSETS = {
     "标普500": "SPY",
@@ -73,7 +73,6 @@ def get_market_animation_data(tickers):
             series = raw_data[ticker].dropna()
             if len(series) < 260: continue
 
-            # 重采样为"周"
             series_weekly = series.resample('W-FRI').last() 
             base_mean = series.tail(252).mean()
             base_std = series.tail(252).std()
@@ -82,7 +81,6 @@ def get_market_animation_data(tickers):
             for date, price in recent_weeks.items():
                 z_score = (price - base_mean) / base_std
                 
-                # 动量回溯
                 lookback_date = date - timedelta(weeks=12)
                 try:
                     idx = series.index.searchsorted(lookback_date)
@@ -117,14 +115,13 @@ def get_market_animation_data(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("🎢 宏观时光机 (UI 修复版)")
-st.caption(f"更新: {update_time} | 无干扰纯净模式")
+st.title("🎢 宏观时光机 (优雅配速版)")
+st.caption(f"更新: {update_time} | 当前播放速度：0.4秒/帧 (适合人眼观察)")
 
 df_anim = get_market_animation_data(ASSETS)
 
 if not df_anim.empty:
     
-    # 准备倒放序列
     all_dates = sorted(df_anim['Date'].unique())
     reverse_dates = all_dates[::-1]
 
@@ -142,7 +139,7 @@ if not df_anim.empty:
         range_y=[-50, 60],   
         color_continuous_scale="RdYlGn",
         range_color=[-20, 40],
-        title="" # 去掉标题，界面更干净
+        title="" 
     )
 
     fig.update_traces(
@@ -153,7 +150,6 @@ if not df_anim.empty:
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
-    # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", 
                        text="🔥 拥挤", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", 
@@ -163,27 +159,31 @@ if not df_anim.empty:
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", 
                        text="⚠️ 崩盘", showarrow=False, font=dict(color="orange"))
 
-    # --- 关键修改：强制覆盖默认按钮 ---
-    # 我们直接重写 updatemenus，这样方块键就再也回不来了
+    # --- 核心修改：调整播放速度 ---
+    # duration: 每一帧停留的时间（毫秒）。400ms = 0.4s
+    # transition: 帧与帧之间的过渡动画时间。200ms让球移动得更平滑，不生硬
+    
+    animation_settings = dict(frame=dict(duration=400, redraw=True), fromcurrent=True)
+    
     fig.layout.updatemenus = [
         dict(
             type="buttons",
             showactive=False,
             direction="left",
-            x=0.1, y=0, # 按钮位置调整到左下角
+            x=0.1, y=0, 
             pad={"r": 10, "t": 10},
             buttons=[
                 # 倒放键
                 dict(
                     label="⏪ 倒放",
                     method="animate",
-                    args=[reverse_dates, dict(frame=dict(duration=150, redraw=True), fromcurrent=True, mode='immediate')]
+                    args=[reverse_dates, animation_settings]
                 ),
                 # 播放键
                 dict(
                     label="▶️ 播放",
                     method="animate",
-                    args=[None, dict(frame=dict(duration=150, redraw=True), fromcurrent=True)]
+                    args=[None, animation_settings]
                 ),
                 # 暂停键
                 dict(
@@ -206,7 +206,6 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 底部简报
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
     st.markdown("### 📊 最新市场快照")
