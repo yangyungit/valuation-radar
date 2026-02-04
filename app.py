@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="宏观真理雷达 (同步修复版)", layout="wide")
+st.set_page_config(page_title="宏观真理雷达 (完美同步版)", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -132,8 +132,9 @@ def get_market_animation_data(tickers):
                 else:
                     vol_z = 0
                 
+                # 调整球体大小逻辑
                 size_metric = 10 + (vol_z * 8) 
-                size_metric = max(5, min(size_metric, 50))
+                size_metric = max(5, min(size_metric, 60)) # 稍微放大一点上限
                 
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'), 
@@ -160,8 +161,8 @@ def get_market_animation_data(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("👁️ 宏观真理雷达 (时间轴修复版)")
-st.caption(f"洞察核心：**球体大小** 代表 **成交量异动**。时间轴现已完美同步。")
+st.title("👁️ 宏观真理雷达 (视觉修复版)")
+st.caption(f"更新: {update_time} | 修复：日期标题同步显示 & 大球防出框")
 
 df_anim = get_market_animation_data(ASSETS)
 
@@ -169,10 +170,8 @@ if not df_anim.empty:
     
     all_dates = sorted(df_anim['Date'].unique())
     reverse_dates = all_dates[::-1]
-    
-    start_str = all_dates[0]
-    end_str = all_dates[-1]
 
+    # 1. 基础图表构建
     fig = px.scatter(
         df_anim, 
         x="Z-Score", 
@@ -184,31 +183,49 @@ if not df_anim.empty:
         hover_data=["Price", "Ticker", "Vol_Z"],
         color="Momentum", 
         size="Size", 
-        size_max=45, 
-        range_x=[-4.5, 4.5], 
-        range_y=[-60, 80], 
+        size_max=50, # 允许球更大
+        # --- 核心修改：扩大坐标轴范围，防止出框 ---
+        range_x=[-5.5, 5.5], 
+        range_y=[-80, 100], 
         color_continuous_scale="RdYlGn",
         range_color=[-20, 40],
-        title=f"📅 {start_str} 至 {end_str} (大球 = 强共识/结构性变化)"
+        # 初始标题
+        title=f"📅 市场定格: {all_dates[0]}"
     )
 
+    # --- 核心修改：解决球体出框被切的问题 ---
     fig.update_traces(
+        cliponaxis=False, # 关键：允许球体画在坐标轴外面，不被切掉
         textposition='top center', 
         marker=dict(line=dict(width=1, color='black')) 
     )
     
+    # 辅助线
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
+    # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", 
-                       text="🔥 拥挤区<br>(大球=新范式)<br>(小球=假泡沫)", showarrow=False, font=dict(color="red"))
+                       text="🔥 拥挤/新范式", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", 
-                       text="💎 爆发区<br>(大球=主力抢筹)", showarrow=False, font=dict(color="#00FF00"))
-    
+                       text="💎 捡漏/爆发", showarrow=False, font=dict(color="#00FF00"))
+    fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", 
+                       text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
+    fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", 
+                       text="⚠️ 崩盘/陷阱", showarrow=False, font=dict(color="orange"))
+
+    # --- 核心修改：手动注入每一帧的标题 ---
+    # 这一步是让标题跟着日期跑的关键！
+    # 我们遍历 Plotly 生成的每一帧，强行把它的 Layout 标题改成当天的日期
+    for frame in fig.frames:
+        frame_date = frame.name # 这里的 name 就是我们在 dataframe 里存的 Date
+        frame.layout.title.text = f"📅 市场定格: {frame_date}"
+
+    # 动画参数
     animation_settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
     animation_settings_slow = dict(frame=dict(duration=500, redraw=True), fromcurrent=True)
 
-    # --- 关键修改：只更新按钮，不再覆盖 sliders ---
+    # 按钮组
     fig.layout.updatemenus = [
         dict(
             type="buttons",
@@ -224,42 +241,23 @@ if not df_anim.empty:
             ]
         )
     ]
-    
-    # --- 修复逻辑：访问现有的 slider 并修改它，而不是替换它 ---
-    try:
-        # Plotly Express 自动生成的 slider 通常是列表中的第一个
-        if fig.layout.sliders:
-            fig.layout.sliders[0].currentvalue.prefix = "当前时间: "
-            fig.layout.sliders[0].pad.t = 50 # 增加一点顶部间距防止重叠
-    except:
-        pass # 如果万一没有slider，就不改了，防止报错
 
     fig.update_layout(
         height=850,
         template="plotly_dark",
         xaxis_title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->",
         yaxis_title="<-- 资金流出  |  资金流入 -->",
-        margin=dict(l=40, r=40, t=40, b=40)
-        # 注意：这里删除了 sliders=[...] 那一行
+        margin=dict(l=40, r=40, t=60, b=40)
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("🧐 如何用此图做'穿透力'审视？", expanded=True):
+    # 底部说明与数据
+    with st.expander("🧐 视觉解读指南", expanded=False):
         st.markdown("""
-        ### 投资功力的试金石：量价背离 (Volume-Price Divergence)
-        
-        **1. 结构性牛市 (The Paradigm Shift)**
-        * **现象：** 资产处于右上角（Z-Score > 2），但气泡**异常巨大**。
-        * **解读：** 尽管价格很贵，但成交量也在通过历史极值。说明市场不仅接受了这个价格，还在疯狂涌入。**这是新钱在把旧钱洗出去，新周期开启。**
-        
-        **2. 虚假繁荣 (The Bull Trap)**
-        * **现象：** 资产处于右上角，但气泡**非常小**。
-        * **解读：** 价格是被少量资金“买”上去的（缩量上涨）。极度危险。
-        
-        **3. 底部吸筹 (Accumulation)**
-        * **现象：** 资产处于左下角（冷宫），但气泡**突然变大**。
-        * **解读：** 价格还没涨，但有人在暗中大量吃货。最佳左侧建仓点。
+        * **大标题日期：** 抬头看图表上方，日期会随动画实时跳动。
+        * **球体完整性：** 现已允许球体溢出边界，确保你能看到完整的大泡沫。
+        * **球体大小：** 代表成交量异动 (Volume Z-Score)。球越大，共识越强。
         """)
 
     latest_date = df_anim['Date'].iloc[-1]
@@ -273,4 +271,4 @@ if not df_anim.empty:
     )
 
 else:
-    st.info("正在初始化...")
+    st.info("正在加载数据...")
