@@ -1,12 +1,12 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
+import plotly.express as px
 from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="全球宏观雷达 (矢量版)", layout="wide")
+st.set_page_config(page_title="宏观时光机 (Market Time Machine)", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -53,13 +53,13 @@ ASSETS = {
     "铀矿(核能)": "URA"
 }
 
-# --- 2. 数据处理核心逻辑 (短矢量版) ---
+# --- 2. 数据处理核心逻辑 (时光机版) ---
 @st.cache_data(ttl=3600)
-def get_market_data_vector(tickers):
-    current_data = []
-    vectors_data = [] 
+def get_market_animation_data(tickers):
+    animation_frames = []
     
     end_date = datetime.now()
+    # 我们取过去 400 天的数据，为了计算一整年的动画
     start_date = end_date - timedelta(days=400) 
     
     progress_bar = st.progress(0)
@@ -67,152 +67,123 @@ def get_market_data_vector(tickers):
     total = len(tickers)
     count = 0
 
+    # 预先下载所有数据以提高速度 (Batch Download)
+    # yfinance支持一次下载多个ticker
+    ticker_list = list(tickers.values())
+    try:
+        status_text.text("正在批量下载全市场历史数据...")
+        raw_data = yf.download(ticker_list, start=start_date, end=end_date, progress=False)['Close']
+    except Exception as e:
+        return pd.DataFrame() # 失败返回空
+
+    progress_bar.progress(0.3)
+    status_text.text("正在构建时间序列模型...")
+
+    # 对每一列（每一个资产）进行处理
+    processed_dfs = []
+    
     for name, ticker in tickers.items():
         try:
-            count += 1
-            if count % 5 == 0: 
-                status_text.text(f"正在计算瞬时方向: {name}...")
-                progress_bar.progress(count / total)
-
-            df = yf.download(ticker, start=start_date, end=end_date, progress=False)['Close']
+            if ticker not in raw_data.columns:
+                continue
             
-            if df.empty: continue
-            if isinstance(df, pd.DataFrame): series = df.iloc[:, 0]
-            else: series = df
-            
-            series = series.dropna()
+            series = raw_data[ticker].dropna()
             if len(series) < 260: continue
 
-            # --- 核心修改：只计算"当前"和"5天前"两个点 ---
-            # 这两点连线，就是这一周的"速度矢量"
+            # --- 核心技巧：重采样为"周" (Weekly) ---
+            # 这样动画只有 52 帧，非常流畅，且过滤了单日噪音
+            series_weekly = series.resample('W-FRI').last() 
             
-            # 1. 坐标系标尺 (用过去一年的均值标准差)
-            base_window = series.tail(252)
-            mean = base_window.mean()
-            std = base_window.std()
-            
-            # 2. 获取两个关键时间点：现在(t) 和 1周前(t-5)
-            # 确保数据够
-            if len(series) < 70: continue
+            # 计算基准 (用过去一年的整体分布作为静态地图背景)
+            # 这样坐标轴不会乱动，球在动
+            base_mean = series.tail(252).mean()
+            base_std = series.tail(252).std()
 
-            idx_now = -1
-            idx_prev = -6 # 5个交易日前
+            # 遍历每一周，生成这一周的数据切片
+            # 我们只生成最近 52 周（1年）的动画
+            recent_weeks = series_weekly.tail(52)
             
-            # --- 现在的坐标 ---
-            price_now = series.iloc[idx_now]
-            z_now = (price_now - mean) / std
-            # 现在的动量 (vs 60天前)
-            price_60_now = series.iloc[idx_now - 60]
-            m_now = ((price_now - price_60_now) / price_60_now) * 100
-            
-            # --- 1周前的坐标 (尾巴根部) ---
-            price_prev = series.iloc[idx_prev]
-            z_prev = (price_prev - mean) / std
-            # 当时的动量 (vs 当时之前的60天)
-            price_60_prev = series.iloc[idx_prev - 60]
-            m_prev = ((price_prev - price_60_prev) / price_60_prev) * 100
-            
-            # 存入数据
-            current_data.append({
-                "Name": name,
-                "Z-Score": round(z_now, 2),
-                "Momentum": round(m_now, 2),
-                "Price": round(price_now, 2)
-            })
-            
-            # 存尾巴 (只有两个点：起点 -> 终点)
-            vectors_data.append({
-                "Name": name,
-                "X": [z_prev, z_now],
-                "Y": [m_prev, m_now]
-            })
-            
+            for date, price in recent_weeks.items():
+                # 1. 计算当时的 Z-Score (相对于全年基准)
+                # 注意：这里用的是固定基准，为了展示"绝对位置"的移动
+                z_score = (price - base_mean) / base_std
+                
+                # 2. 计算当时的动量 (相对于那一天之前的 12 周/约3个月)
+                # 我们需要回溯到原始数据去找 3个月前的价格
+                lookback_date = date - timedelta(weeks=12)
+                # 在原始数据中找最接近 lookback_date 的价格
+                try:
+                    # searchsorted 找最近的索引
+                    idx = series.index.searchsorted(lookback_date)
+                    if idx < len(series) and idx >= 0:
+                        price_prev = series.iloc[idx]
+                        momentum = ((price - price_prev) / price_prev) * 100
+                    else:
+                        momentum = 0
+                except:
+                    momentum = 0
+                
+                processed_dfs.append({
+                    "Date": date.strftime('%Y-%m-%d'), # 转成字符串给滑块用
+                    "Name": name,
+                    "Ticker": ticker,
+                    "Z-Score": round(z_score, 2),
+                    "Momentum": round(momentum, 2),
+                    "Price": round(price, 2),
+                    "Size": 15 # 固定大小
+                })
+                
         except Exception as e:
             continue
-    
+
     progress_bar.empty()
     status_text.empty()
-    return pd.DataFrame(current_data), vectors_data
+    
+    # 转换成大表格
+    full_df = pd.DataFrame(processed_dfs)
+    
+    # 确保时间排序正确
+    full_df = full_df.sort_values(by="Date")
+    
+    return full_df
 
 # --- 3. 页面渲染 ---
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("🌪️ 宏观矢量雷达 (1-Week Vector)")
-st.caption(f"数据更新: {update_time} | 箭头含义：过去 1 周的瞬时运动方向")
+st.title("🎢 宏观时光机 (Market Time Machine)")
+st.caption(f"数据更新: {update_time} | 包含过去 52 周的动态演变 | 点击下方 ▶️ 播放")
 
-show_trails = st.sidebar.checkbox("显示方向短尾", value=True)
+df_anim = get_market_animation_data(ASSETS)
 
-df_now, vectors = get_market_data_vector(ASSETS)
-
-if not df_now.empty:
-    fig = go.Figure()
-
-    # --- A. 画短尾巴 (矢量线) ---
-    if show_trails:
-        for vec in vectors:
-            curr_mom = vec['Y'][-1] # 当前动量
-            
-            # 颜色逻辑：动量高红，低绿
-            # 线条稍微透明一点，不要喧宾夺主
-            color = "rgba(200, 200, 200, 0.4)" 
-            if curr_mom > 5: color = "rgba(255, 80, 80, 0.6)" 
-            elif curr_mom < -5: color = "rgba(80, 255, 80, 0.6)" 
-            
-            # 画线 (只连两个点)
-            fig.add_trace(go.Scatter(
-                x=vec['X'],
-                y=vec['Y'],
-                mode='lines',
-                line=dict(color=color, width=2), # 线条短而有力
-                hoverinfo='skip',
-                showlegend=False
-            ))
-
-    # --- B. 画当前点 (大球) ---
-    fig.add_trace(go.Scatter(
-        x=df_now['Z-Score'],
-        y=df_now['Momentum'],
-        mode='markers+text',
-        text=df_now['Name'],
-        textposition="top center",
-        marker=dict(
-            size=16, 
-            color=df_now['Momentum'], 
-            colorscale='RdYlGn', 
-            showscale=True,
-            colorbar=dict(title="资金热度"),
-            line=dict(color='black', width=1)
-        ),
-        hovertemplate="<b>%{text}</b><br>Z-Score: %{x}<br>3月涨跌: %{y}%<extra></extra>"
-    ))
-
-    # --- C. 坐标轴与修饰 ---
-    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
-    fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
-
-    annotations = [
-        dict(x=3.2, y=40, text="<b>🔥 拥挤/泡沫</b>", showarrow=False, font=dict(color="red", size=14)),
-        dict(x=-3.2, y=40, text="<b>💎 捡漏/爆发</b>", showarrow=False, font=dict(color="#00FF00", size=14)),
-        dict(x=-3.2, y=-40, text="<b>🧊 冷宫/菜市场</b>", showarrow=False, font=dict(color="gray", size=14)),
-        dict(x=3.2, y=-40, text="<b>⚠️ 崩盘/陷阱</b>", showarrow=False, font=dict(color="orange", size=14))
-    ]
-    fig.update_layout(annotations=annotations)
-
-    fig.update_layout(
-        height=850,
-        xaxis_title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->",
-        yaxis_title="<-- 资金流出  |  资金流入 -->",
-        xaxis=dict(range=[-4.5, 4.5]), 
-        yaxis=dict(range=[-50, 60]),
-        template="plotly_dark",
-        margin=dict(l=40, r=40, t=40, b=40)
+if not df_anim.empty:
+    
+    # --- 使用 Plotly Express 制作动画 ---
+    # 这是一个非常强大的高层接口
+    
+    fig = px.scatter(
+        df_anim, 
+        x="Z-Score", 
+        y="Momentum", 
+        animation_frame="Date", # 核心：这就是时间轴
+        animation_group="Name", # 核心：告诉它谁是谁，保证平滑过渡
+        text="Name",
+        hover_name="Name",
+        hover_data=["Price", "Ticker"],
+        color="Momentum", # 颜色随动量变化
+        range_x=[-4.5, 4.5], # 锁定 X 轴范围，防止画面乱跳
+        range_y=[-50, 60],   # 锁定 Y 轴范围
+        color_continuous_scale="RdYlGn",
+        range_color=[-20, 40], # 锁定颜色范围，防止闪烁
+        title="点击播放键 ▶️ 回看过去一年资产轮动路径"
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    # 美化布局
+    fig.update_traces(
+        textposition='top center', 
+        marker=dict(size=14, line=dict(width=1, color='black'))
+    )
     
-    with st.expander("查看详细数据表"):
-        st.dataframe(df_now.sort_values(by="Z-Score", ascending=False).style.background_gradient(subset=['Momentum'], cmap='RdYlGn'), use_container_width=True)
-
-else:
-    st.info("正在扫描全球市场，请稍等...")
+    # 画十字线
+    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+    fig.add_vline(x=0, line_width=1,
