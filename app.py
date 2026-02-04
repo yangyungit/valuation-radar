@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="宏观时光机 (专业版)", layout="wide")
+st.set_page_config(page_title="宏观真理雷达 (Truth Radar)", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -64,13 +64,16 @@ def get_market_animation_data(tickers):
     
     ticker_list = list(tickers.values())
     try:
-        status_text.text("正在拉取 10 年历史数据 (约需30-60秒)...")
-        raw_data = yf.download(ticker_list, start=start_date, end=end_date, progress=False, auto_adjust=True)['Close']
+        status_text.text("正在拉取 10 年量价数据 (Price & Volume)...")
+        # 这里的 auto_adjust=True 很关键，保证价格和成交量都复权
+        data = yf.download(ticker_list, start=start_date, end=end_date, progress=False, auto_adjust=True)
+        raw_close = data['Close']
+        raw_volume = data['Volume']
     except Exception as e:
         return pd.DataFrame() 
 
     progress_bar.progress(0.4)
-    status_text.text("正在进行时空清洗与滚动计算...")
+    status_text.text("正在计算结构性因子 (Volume Confirmation)...")
 
     processed_dfs = []
     total_assets = len(tickers)
@@ -82,42 +85,68 @@ def get_market_animation_data(tickers):
             progress_bar.progress(0.4 + (0.5 * current_asset / total_assets))
 
         try:
-            if ticker not in raw_data.columns:
+            if ticker not in raw_close.columns:
                 continue
             
-            series = raw_data[ticker].dropna()
-            if len(series) < 260: continue
+            # 价格序列
+            series_price = raw_close[ticker].dropna()
+            # 成交量序列
+            series_vol = raw_volume[ticker].dropna()
+            
+            if len(series_price) < 260: continue
 
-            series_weekly = series.resample('W-FRI').last() 
+            # 重采样为"周"
+            price_weekly = series_price.resample('W-FRI').last()
+            vol_weekly = series_vol.resample('W-FRI').mean() # 成交量取周均值
             
             target_start_date = end_date - timedelta(days=365*10)
-            display_series = series_weekly[series_weekly.index >= target_start_date]
+            display_idx = price_weekly.index >= target_start_date
             
-            for date, price in display_series.items():
-                # 滚动窗口：只看过去 1 年 (252交易日)
-                past_year_slice = series.loc[:date].tail(252)
+            # 只遍历显示时间段
+            display_dates = price_weekly[display_idx].index
+            
+            for date in display_dates:
+                # --- 1. 价格 Z-Score (Rolling 1 Year) ---
+                past_year_price = series_price.loc[:date].tail(252)
+                if len(past_year_price) < 100: continue
                 
-                if len(past_year_slice) < 100: continue 
-
-                rolling_mean = past_year_slice.mean()
-                rolling_std = past_year_slice.std()
+                p_mean = past_year_price.mean()
+                p_std = past_year_price.std()
+                if p_std == 0: continue
                 
-                if rolling_std == 0: continue
-
-                z_score = (price - rolling_mean) / rolling_std
+                price_val = price_weekly.loc[date]
+                z_score = (price_val - p_mean) / p_std
                 
+                # --- 2. 动量 (3 Month) ---
                 lookback_date = date - timedelta(weeks=12)
                 try:
-                    idx = series.index.searchsorted(lookback_date)
-                    if idx < len(series) and idx >= 0:
-                        price_prev = series.iloc[idx]
+                    idx = series_price.index.searchsorted(lookback_date)
+                    if idx < len(series_price) and idx >= 0:
+                        price_prev = series_price.iloc[idx]
                         if price_prev > 0:
-                            momentum = ((price - price_prev) / price_prev) * 100
+                            momentum = ((price_val - price_prev) / price_prev) * 100
                         else: momentum = 0
-                    else:
-                        momentum = 0
-                except:
-                    momentum = 0
+                    else: momentum = 0
+                except: momentum = 0
+                
+                # --- 3. 关键洞察：成交量异动 (Volume Z-Score) ---
+                # 逻辑：判断当前的成交量相对于过去一年是否显著放大
+                # 如果 Price 高 + Volume 高 = 结构性确认 (Structural Confirmation)
+                past_year_vol = series_vol.loc[:date].tail(252)
+                v_mean = past_year_vol.mean()
+                v_std = past_year_vol.std()
+                
+                vol_val = vol_weekly.loc[date]
+                if v_std > 0:
+                    vol_z = (vol_val - v_mean) / v_std
+                else:
+                    vol_z = 0
+                
+                # 处理一下 Size，让它视觉上更明显但不过分
+                # 基础大小 10，每增加 1个标准差的放量，球变大 5
+                # 限制最大最小值
+                size_metric = 10 + (vol_z * 8) 
+                size_metric = max(5, min(size_metric, 50)) # 最小5，最大50
                 
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'), 
@@ -125,8 +154,9 @@ def get_market_animation_data(tickers):
                     "Ticker": ticker,
                     "Z-Score": round(z_score, 2),
                     "Momentum": round(momentum, 2),
-                    "Price": round(price, 2),
-                    "Size": 15
+                    "Vol_Z": round(vol_z, 2), # 记录下来备查
+                    "Price": round(price_val, 2),
+                    "Size": size_metric 
                 })
         except Exception as e:
             continue
@@ -143,8 +173,8 @@ def get_market_animation_data(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("🎢 宏观时光机 (10-Year Pro)")
-st.caption(f"数据范围：过去 10 年 | 资产数：{len(ASSETS)} | 算法：滚动 Z-Score")
+st.title("👁️ 宏观真理雷达 (Volume-Adjusted)")
+st.caption(f"洞察核心：**球体大小** 代表 **成交量异动 (Volume Anomaly)**。球越大，上涨越真实。")
 
 df_anim = get_market_animation_data(ASSETS)
 
@@ -164,32 +194,31 @@ if not df_anim.empty:
         animation_group="Name", 
         text="Name",
         hover_name="Name",
-        hover_data=["Price", "Ticker"],
+        hover_data=["Price", "Ticker", "Vol_Z"],
         color="Momentum", 
+        size="Size", # 核心修改：大小由成交量决定
+        size_max=45, # 调整最大气泡
         range_x=[-4.5, 4.5], 
         range_y=[-60, 80], 
         color_continuous_scale="RdYlGn",
         range_color=[-20, 40],
-        title=f"📅 历史回放 ({start_str} 至 {end_str})"
+        title=f"📅 {start_str} 至 {end_str} (大球 = 强共识/结构性变化)"
     )
 
     fig.update_traces(
         textposition='top center', 
-        marker=dict(size=14, line=dict(width=1, color='black'))
+        marker=dict(line=dict(width=1, color='black')) # 黑边让大气泡更清楚
     )
     
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
+    # 标注修改，增加对 Size 的解读
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", 
-                       text="🔥 拥挤/泡沫", showarrow=False, font=dict(color="red"))
+                       text="🔥 拥挤区<br>(大球=新范式)<br>(小球=假泡沫)", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", 
-                       text="💎 捡漏/爆发", showarrow=False, font=dict(color="#00FF00"))
-    fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", 
-                       text="🧊 冷宫/崩溃", showarrow=False, font=dict(color="gray"))
-    fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", 
-                       text="⚠️ 价值陷阱", showarrow=False, font=dict(color="orange"))
-
+                       text="💎 爆发区<br>(大球=主力抢筹)", showarrow=False, font=dict(color="#00FF00"))
+    
     animation_settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
     animation_settings_slow = dict(frame=dict(duration=500, redraw=True), fromcurrent=True)
 
@@ -202,7 +231,7 @@ if not df_anim.empty:
             pad={"r": 10, "t": 10},
             buttons=[
                 dict(label="⏪ 倒放", method="animate", args=[reverse_dates, animation_settings_fast]),
-                dict(label="▶️ 极速 (10年)", method="animate", args=[None, animation_settings_fast]),
+                dict(label="▶️ 极速", method="animate", args=[None, animation_settings_fast]),
                 dict(label="🐢 慢放", method="animate", args=[None, animation_settings_slow]),
                 dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])
             ]
@@ -220,40 +249,35 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 关键修改：添加专业的局限性说明 ---
-    with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
+    with st.expander("🧐 如何用此图做'穿透力'审视？", expanded=True):
         st.markdown("""
-        ### 1. 幸存者偏差 (Survivorship Bias)
-        * **问题：** 当前的资产列表是基于 **2026年** 的视角选取的。
-        * **影响：** 回看 2015 年数据时，我们看到了当时的“赢家”（如 Nvidia, Bitcoin），但忽略了当时存在但后来退市或破产的公司/代币（如 LUNA, FTX, 或某些退市的中概股）。这会导致历史回测看起来比实际情况更乐观。
+        ### 投资功力的试金石：量价背离 (Volume-Price Divergence)
         
-        ### 2. 滚动窗口的“近视效应” (Rolling Window Bias)
-        * **算法：** 本图表的 Z-Score 是基于 **“当时的过去一年 (Rolling 1-Year)”** 计算的。
-        * **优点：** 还原了当时的交易员视角，避免了“未来函数”。
-        * **局限：** 如果市场发生 **结构性突变 (Structural Break)**，例如利率从 0% 永久升至 5%，旧的估值中枢会失效。此时 Z-Score = -2 可能不是“便宜”，而是“价值重估”。不要刻舟求剑。
+        **1. 结构性牛市 (The Paradigm Shift)**
+        * **现象：** 资产处于右上角（Z-Score > 2），但气泡**异常巨大**。
+        * **解读：** 尽管价格很贵，但成交量也在通过历史极值。说明市场不仅接受了这个价格，还在疯狂涌入。**这是新钱在把旧钱洗出去，新周期开启。**
+        * **操作：** 忽略估值恐高，顺势而为。
         
-        ### 3. 正态分布假设谬误 (Normality Assumption)
-        * **问题：** Z-Score 假设价格波动服从正态分布。
-        * **现实：** 金融市场存在 **肥尾效应 (Fat Tails)**。在黑天鹅事件中，资产价格可能会跌至 -5甚至 -10个标准差。Z-Score < -2 只是统计学上的低估，不代表物理上的底。
+        **2. 虚假繁荣 (The Bull Trap)**
+        * **现象：** 资产处于右上角，但气泡**非常小**。
+        * **解读：** 价格是被少量资金“买”上去的（缩量上涨）。市场参与者内心并不认可这个价格，只是没人卖而已。
+        * **操作：** 极度危险。一旦有风吹草动，流动性瞬间枯竭，价格会崩塌。
         
-        ### 4. 波动率量纲差异 (Volatility Scale)
-        * **问题：** 图表中比特币（高波）和美债（低波）放在同一个坐标系中。
-        * **影响：** 美债的 Z-Score +2 可能意味着 2% 的涨幅，而比特币的 Z-Score +2 意味着 50% 的涨幅。**位置代表的是“相对自身历史的极端程度”，而不是绝对收益率。**
-        
-        ### 5. 数据源精度 (Data Quality)
-        * 数据源为 Yahoo Finance 免费接口，可能存在分红/拆股调整延迟，不适用于高频交易决策。
+        **3. 底部吸筹 (Accumulation)**
+        * **现象：** 资产处于左下角（冷宫），但气泡**突然变大**。
+        * **解读：** 价格还没涨，但有人在暗中大量吃货。
+        * **操作：** 最佳的左侧建仓点。
         """)
 
-    # 底部显示最新一期数据
     latest_date = df_anim['Date'].iloc[-1]
     st.markdown(f"### 📊 市场定格 ({latest_date})")
     df_latest = df_anim[df_anim['Date'] == latest_date]
     st.dataframe(
-        df_latest[['Name', 'Ticker', 'Price', 'Z-Score', 'Momentum']]
+        df_latest[['Name', 'Ticker', 'Price', 'Z-Score', 'Momentum', 'Vol_Z']]
         .sort_values(by="Z-Score", ascending=False)
-        .style.background_gradient(subset=['Momentum'], cmap='RdYlGn'), 
+        .style.background_gradient(subset=['Vol_Z'], cmap='Blues'), # 用蓝色深浅表示成交量异动
         use_container_width=True
     )
 
 else:
-    st.info("正在初始化长周期模型，请稍等...")
+    st.info("正在初始化...")
