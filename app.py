@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 基础配置 ---
-st.set_page_config(page_title="宏观雷达 (Pro)", layout="wide")
+st.set_page_config(page_title="宏观雷达 (Pro Max)", layout="wide")
 
-# 纯净版资产池 (无Emoji, 无代码后缀)
+# 纯净版资产池 (键名简化，代码在值中)
 ASSETS = {
     # --- 全球核心指数 ---
     "标普500": "SPY",
@@ -59,10 +59,10 @@ def get_market_data(tickers):
     start_date = end_date - timedelta(days=365*11)
     
     display_years = 10
-    rolling_window = 252 # 滚动 1 年
+    rolling_window = 252 
     
     status_text = st.empty()
-    status_text.text(f"📥 正在扫描全球资产 (10年历史 / 滚动1年基准)...")
+    status_text.text(f"📥 正在扫描全球资产 (10年历史)...")
     
     try:
         data = yf.download(list(tickers.values()), start=start_date, end=end_date, progress=False, auto_adjust=True)
@@ -71,7 +71,7 @@ def get_market_data(tickers):
     except:
         return pd.DataFrame() 
     
-    status_text.text("⚡ 正在计算量价因子...")
+    status_text.text("⚡ 正在计算因子...")
     
     processed_dfs = []
     
@@ -90,7 +90,7 @@ def get_market_data(tickers):
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
             for date in display_dates:
-                # Rolling 1 Year
+                # Rolling Window
                 window_price = series_price.loc[:date].tail(rolling_window)
                 window_vol = series_vol.loc[:date].tail(rolling_window)
                 
@@ -126,6 +126,7 @@ def get_market_data(tickers):
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'), 
                     "Name": name,
+                    "Ticker": ticker, # 保存代码供表格使用
                     "Z-Score": round(z_score, 2),
                     "Momentum": round(momentum, 2),
                     "Vol_Z": round(vol_z, 2),
@@ -152,12 +153,13 @@ if not df_anim.empty:
     range_x = [-4.5, 4.5]
     range_y = [-50, 60] 
 
+    # 气泡图：只显示中文 Name，保持清爽
     fig = px.scatter(
         df_anim, 
         x="Z-Score", y="Momentum", 
         animation_frame="Date", animation_group="Name", 
         text="Name", hover_name="Name",
-        hover_data=["Price", "Vol_Z"],
+        hover_data=["Ticker", "Price", "Vol_Z"], # 悬停可以看到代码
         color="Momentum", size="Size", size_max=50, 
         range_x=range_x, range_y=range_y, 
         color_continuous_scale="RdYlGn", range_color=[-20, 40],
@@ -174,23 +176,22 @@ if not df_anim.empty:
     fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 崩盘/主跌", showarrow=False, font=dict(color="orange"))
 
-    # 动画控件
-    settings_normal = dict(frame=dict(duration=200, redraw=True), fromcurrent=True)
-    settings_fast = dict(frame=dict(duration=50, redraw=True), fromcurrent=True)
+    # --- 动画控件 (双向播放 + 降速) ---
+    # duration: 400ms (正放) / 100ms (倒放) -> 比之前更从容
+    settings_play = dict(frame=dict(duration=400, redraw=True), fromcurrent=True, transition=dict(duration=100))
+    settings_rewind = dict(frame=dict(duration=100, redraw=True), fromcurrent=True, transition=dict(duration=0))
 
     fig.layout.updatemenus = [dict(
         type="buttons", showactive=False, direction="left", x=0.0, y=-0.15,
         buttons=[
-            dict(label="⏪ 历史回放", method="animate", args=[all_dates[::-1], settings_fast]),
+            dict(label="⏪ 倒放", method="animate", args=[all_dates[::-1], settings_rewind]),
+            dict(label="▶️ 正放", method="animate", args=[None, settings_play]),
             dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])
         ]
     )]
 
-    # --- 修复：不替换 fig.data (避免报错)，只把滑块移到最后 ---
-    # Plotly 默认渲染第一帧，通过 JS 自动播放最稳，但 Streamlit 不支持注入复杂 JS。
-    # 这里我们把滑块位置设为最后，给用户视觉暗示。
+    # 将滑块默认置于最右侧 (虽然画面可能重置，但视觉上暗示终点)
     fig.layout.sliders[0].active = len(all_dates) - 1
-    
     fig.layout.sliders[0].currentvalue.prefix = "" 
     fig.layout.sliders[0].currentvalue.font.size = 20
     fig.layout.sliders[0].pad = {"t": 50} 
@@ -211,13 +212,16 @@ if not df_anim.empty:
         * **数据源:** Yahoo Finance 免费接口，仅供宏观参考。
         """)
 
-    # 静态表格
+    # --- 静态表格 (增加 Ticker 列) ---
     st.markdown("### 📊 最新数据快照")
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
     
+    # 调整列顺序：把 Name 和 Ticker 放前面
+    display_cols = ['Name', 'Ticker', 'Z-Score', 'Momentum', 'Vol_Z', 'Price']
+    
     st.dataframe(
-        df_latest[['Name', 'Z-Score', 'Momentum', 'Vol_Z', 'Price']]
+        df_latest[display_cols]
         .sort_values(by="Z-Score", ascending=False)
         .style
         .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40) 
