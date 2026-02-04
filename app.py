@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="宏观时光机", layout="wide")
+st.set_page_config(page_title="宏观时光机 Pro", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -53,17 +53,16 @@ ASSETS = {
     "铀矿(核能)": "URA"
 }
 
-# --- 2. 数据处理核心逻辑 (时光机版) ---
+# --- 2. 数据处理核心逻辑 ---
 @st.cache_data(ttl=3600)
 def get_market_animation_data(tickers):
-    animation_frames = []
     end_date = datetime.now()
     start_date = end_date - timedelta(days=400) 
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # 批量下载数据
+    # 批量下载
     ticker_list = list(tickers.values())
     try:
         status_text.text("正在下载全市场数据...")
@@ -97,7 +96,7 @@ def get_market_animation_data(tickers):
             for date, price in recent_weeks.items():
                 z_score = (price - base_mean) / base_std
                 
-                # 动量回溯 (3个月前)
+                # 动量回溯
                 lookback_date = date - timedelta(weeks=12)
                 try:
                     idx = series.index.searchsorted(lookback_date)
@@ -133,14 +132,14 @@ def get_market_animation_data(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("🎢 宏观时光机 (Market Time Machine)")
-st.caption(f"更新: {update_time} | 过去1年动态轮动 | 点下方 ▶️ 播放")
+st.title("🎢 宏观时光机 Pro (带慢放功能)")
+st.caption(f"更新: {update_time} | 全新控制台：支持慢速回放与暂停")
 
 df_anim = get_market_animation_data(ASSETS)
 
 if not df_anim.empty:
     
-    # 这里的参数我都换行了，防止复制不全
+    # 制作基础动画
     fig = px.scatter(
         df_anim, 
         x="Z-Score", 
@@ -155,7 +154,7 @@ if not df_anim.empty:
         range_y=[-50, 60],   
         color_continuous_scale="RdYlGn",
         range_color=[-20, 40], 
-        title="点击播放键 ▶️ 回看资产轮动"
+        title="点击下方按钮控制播放速度 ⬇️"
     )
 
     fig.update_traces(
@@ -163,19 +162,9 @@ if not df_anim.empty:
         marker=dict(size=14, line=dict(width=1, color='black'))
     )
     
-    # 画十字线 (这里就是你之前报错的地方，我拆行写了)
-    fig.add_hline(
-        y=0, 
-        line_width=1, 
-        line_dash="dash", 
-        line_color="gray"
-    )
-    fig.add_vline(
-        x=0, 
-        line_width=1, 
-        line_dash="dash", 
-        line_color="gray"
-    )
+    # 画十字线
+    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+    fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
     # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", 
@@ -187,21 +176,46 @@ if not df_anim.empty:
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", 
                        text="⚠️ 崩盘/陷阱", showarrow=False, font=dict(color="orange"))
 
+    # --- 核心修改：自定义播放按钮 ---
     fig.update_layout(
         height=800,
         template="plotly_dark",
         xaxis_title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->",
         yaxis_title="<-- 资金流出  |  资金流入 -->",
         margin=dict(l=40, r=40, t=60, b=40),
-        updatemenus=[dict(
-            type='buttons', 
-            showactive=False, 
-            buttons=[dict(
-                label='Play',
-                method='animate', 
-                args=[None, dict(frame=dict(duration=200, redraw=True), fromcurrent=True)]
-            )]
-        )]
+        
+        # 这里定义了你的"控制中心"
+        updatemenus=[
+            dict(
+                type="buttons",
+                showactive=False,
+                direction="left",
+                x=0.1, y=0, # 按钮位置
+                pad={"r": 10, "t": 10},
+                buttons=[
+                    # 按钮1: 慢速播放 (1000ms = 1秒一帧)
+                    dict(
+                        label="🐢 慢速播放",
+                        method="animate",
+                        args=[None, dict(frame=dict(duration=1000, redraw=True), fromcurrent=True)]
+                    ),
+                    # 按钮2: 正常播放 (200ms = 0.2秒一帧)
+                    dict(
+                        label="▶️ 正常播放",
+                        method="animate",
+                        args=[None, dict(frame=dict(duration=200, redraw=True), fromcurrent=True)]
+                    ),
+                    # 按钮3: 暂停
+                    dict(
+                        label="⏸️ 暂停",
+                        method="animate",
+                        args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))]
+                    )
+                ]
+            )
+        ],
+        # 移除默认的那个自动生成的按钮，防止重叠
+        sliders=[dict(currentvalue={"prefix": "时间: "}, pad={"t": 50})]
     )
 
     st.plotly_chart(fig, use_container_width=True)
