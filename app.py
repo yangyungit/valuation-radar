@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="宏观时光机 Pro", layout="wide")
+st.set_page_config(page_title="宏观时光机 Pro Max", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -62,7 +62,6 @@ def get_market_animation_data(tickers):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # 批量下载
     ticker_list = list(tickers.values())
     try:
         status_text.text("正在下载全市场数据...")
@@ -109,7 +108,7 @@ def get_market_animation_data(tickers):
                     momentum = 0
                 
                 processed_dfs.append({
-                    "Date": date.strftime('%Y-%m-%d'), 
+                    "Date": date.strftime('%Y-%m-%d'), # 这就是 Frame 的名字
                     "Name": name,
                     "Ticker": ticker,
                     "Z-Score": round(z_score, 2),
@@ -132,14 +131,20 @@ def get_market_animation_data(tickers):
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("🎢 宏观时光机 Pro (带慢放功能)")
-st.caption(f"更新: {update_time} | 全新控制台：支持慢速回放与暂停")
+st.title("🎢 宏观时光机 Pro Max (带倒放)")
+st.caption(f"更新: {update_time} | 全能控制台：⏪ 倒放 | ▶️ 播放 | 🐢 慢放 | ⏸️ 暂停")
 
 df_anim = get_market_animation_data(ASSETS)
 
 if not df_anim.empty:
     
-    # 制作基础动画
+    # 获取所有的 Frame 名称（日期字符串），用于构造倒放序列
+    # 必须排序确保顺序正确
+    all_dates = sorted(df_anim['Date'].unique())
+    # 倒序列表
+    reverse_dates = all_dates[::-1]
+
+    # 制作动画
     fig = px.scatter(
         df_anim, 
         x="Z-Score", 
@@ -154,7 +159,7 @@ if not df_anim.empty:
         range_y=[-50, 60],   
         color_continuous_scale="RdYlGn",
         range_color=[-20, 40], 
-        title="点击下方按钮控制播放速度 ⬇️"
+        title="👇 使用下方按钮控制时间流向"
     )
 
     fig.update_traces(
@@ -162,7 +167,6 @@ if not df_anim.empty:
         marker=dict(size=14, line=dict(width=1, color='black'))
     )
     
-    # 画十字线
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
@@ -176,7 +180,7 @@ if not df_anim.empty:
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", 
                        text="⚠️ 崩盘/陷阱", showarrow=False, font=dict(color="orange"))
 
-    # --- 核心修改：自定义播放按钮 ---
+    # --- 核心修改：自定义按钮逻辑 ---
     fig.update_layout(
         height=800,
         template="plotly_dark",
@@ -184,28 +188,34 @@ if not df_anim.empty:
         yaxis_title="<-- 资金流出  |  资金流入 -->",
         margin=dict(l=40, r=40, t=60, b=40),
         
-        # 这里定义了你的"控制中心"
         updatemenus=[
             dict(
                 type="buttons",
                 showactive=False,
                 direction="left",
-                x=0.1, y=0, # 按钮位置
+                x=0.1, y=0,
                 pad={"r": 10, "t": 10},
                 buttons=[
-                    # 按钮1: 慢速播放 (1000ms = 1秒一帧)
+                    # 按钮1: ⏪ 倒放 (Rewind)
+                    # 核心魔法：args[0] 传入了倒序的 Frame 列表
                     dict(
-                        label="🐢 慢速播放",
+                        label="⏪ 倒放",
                         method="animate",
-                        args=[None, dict(frame=dict(duration=1000, redraw=True), fromcurrent=True)]
+                        args=[reverse_dates, dict(frame=dict(duration=200, redraw=True), fromcurrent=True, mode='immediate')]
                     ),
-                    # 按钮2: 正常播放 (200ms = 0.2秒一帧)
+                    # 按钮2: ▶️ 正常播放
                     dict(
-                        label="▶️ 正常播放",
+                        label="▶️ 播放",
                         method="animate",
                         args=[None, dict(frame=dict(duration=200, redraw=True), fromcurrent=True)]
                     ),
-                    # 按钮3: 暂停
+                    # 按钮3: 🐢 慢速播放
+                    dict(
+                        label="🐢 慢放",
+                        method="animate",
+                        args=[None, dict(frame=dict(duration=1000, redraw=True), fromcurrent=True)]
+                    ),
+                    # 按钮4: ⏸️ 暂停
                     dict(
                         label="⏸️ 暂停",
                         method="animate",
@@ -214,7 +224,6 @@ if not df_anim.empty:
                 ]
             )
         ],
-        # 移除默认的那个自动生成的按钮，防止重叠
         sliders=[dict(currentvalue={"prefix": "时间: "}, pad={"t": 50})]
     )
 
@@ -231,4 +240,4 @@ if not df_anim.empty:
     )
 
 else:
-    st.info("数据加载中... (约需20秒)")
+    st.info("时光机预热中... (首次加载需约20秒)")
