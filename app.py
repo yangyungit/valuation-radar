@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 配置与资产池 ---
-st.set_page_config(page_title="全球宏观雷达 (月度趋势版)", layout="wide")
+st.set_page_config(page_title="全球宏观雷达 (矢量版)", layout="wide")
 
 ASSETS = {
     # --- 全球核心指数 ---
@@ -53,11 +53,11 @@ ASSETS = {
     "铀矿(核能)": "URA"
 }
 
-# --- 2. 数据处理核心逻辑 (月度平滑版) ---
+# --- 2. 数据处理核心逻辑 (短矢量版) ---
 @st.cache_data(ttl=3600)
-def get_market_data_smooth(tickers):
+def get_market_data_vector(tickers):
     current_data = []
-    trails_data = [] 
+    vectors_data = [] 
     
     end_date = datetime.now()
     start_date = end_date - timedelta(days=400) 
@@ -71,7 +71,7 @@ def get_market_data_smooth(tickers):
         try:
             count += 1
             if count % 5 == 0: 
-                status_text.text(f"正在计算月度趋势: {name}...")
+                status_text.text(f"正在计算瞬时方向: {name}...")
                 progress_bar.progress(count / total)
 
             df = yf.download(ticker, start=start_date, end=end_date, progress=False)['Close']
@@ -81,69 +81,50 @@ def get_market_data_smooth(tickers):
             else: series = df
             
             series = series.dropna()
-            # 至少需要一年的数据做基准，加最近的波动
             if len(series) < 260: continue
 
-            # --- 核心修改：计算"月度路径" (Weekly Snapshots) ---
-            # 我们不再取最后10天，而是取过去20个交易日（约1个月），每隔5天（1周）采一个样
-            # 这样轨迹就是平滑的：4周前 -> 3周前 -> 2周前 -> 1周前 -> 现在
+            # --- 核心修改：只计算"当前"和"5天前"两个点 ---
+            # 这两点连线，就是这一周的"速度矢量"
             
-            # 1. 计算过去一年的均值标准差作为"地图坐标系" (保持坐标系稳定)
+            # 1. 坐标系标尺 (用过去一年的均值标准差)
             base_window = series.tail(252)
             mean = base_window.mean()
             std = base_window.std()
             
-            # 2. 选出关键时间点 (Keyframes)
-            # indices: [-21, -16, -11, -6, -1] 对应过去4周的每周节点
-            step = 5 # 每5个交易日(一周)取一个点
-            lookback_weeks = 4
-            indices_to_plot = []
-            
-            # 确保数据够长
-            if len(series) < (lookback_weeks * step + 65): continue
+            # 2. 获取两个关键时间点：现在(t) 和 1周前(t-5)
+            # 确保数据够
+            if len(series) < 70: continue
 
-            for w in range(lookback_weeks, -1, -1): # 4, 3, 2, 1, 0
-                idx = len(series) - 1 - (w * step)
-                indices_to_plot.append(idx)
+            idx_now = -1
+            idx_prev = -6 # 5个交易日前
             
-            trail_x = []
-            trail_y = []
+            # --- 现在的坐标 ---
+            price_now = series.iloc[idx_now]
+            z_now = (price_now - mean) / std
+            # 现在的动量 (vs 60天前)
+            price_60_now = series.iloc[idx_now - 60]
+            m_now = ((price_now - price_60_now) / price_60_now) * 100
             
-            current_price = 0
-            current_z = 0
-            current_m = 0
-
-            # 3. 遍历这些关键点计算坐标
-            for i, idx in enumerate(indices_to_plot):
-                price_t = series.iloc[idx]
-                
-                # Z-Score
-                z_t = (price_t - mean) / std
-                
-                # Momentum (相对于那个时间点之前的60天)
-                price_prev = series.iloc[idx - 60]
-                m_t = ((price_t - price_prev) / price_prev) * 100
-                
-                trail_x.append(z_t)
-                trail_y.append(m_t)
-                
-                # 最后一个点是"现在"
-                if i == len(indices_to_plot) - 1:
-                    current_price = price_t
-                    current_z = z_t
-                    current_m = m_t
-
+            # --- 1周前的坐标 (尾巴根部) ---
+            price_prev = series.iloc[idx_prev]
+            z_prev = (price_prev - mean) / std
+            # 当时的动量 (vs 当时之前的60天)
+            price_60_prev = series.iloc[idx_prev - 60]
+            m_prev = ((price_prev - price_60_prev) / price_60_prev) * 100
+            
+            # 存入数据
             current_data.append({
                 "Name": name,
-                "Z-Score": round(current_z, 2),
-                "Momentum": round(current_m, 2),
-                "Price": round(current_price, 2)
+                "Z-Score": round(z_now, 2),
+                "Momentum": round(m_now, 2),
+                "Price": round(price_now, 2)
             })
             
-            trails_data.append({
+            # 存尾巴 (只有两个点：起点 -> 终点)
+            vectors_data.append({
                 "Name": name,
-                "X": trail_x,
-                "Y": trail_y 
+                "X": [z_prev, z_now],
+                "Y": [m_prev, m_now]
             })
             
         except Exception as e:
@@ -151,53 +132,44 @@ def get_market_data_smooth(tickers):
     
     progress_bar.empty()
     status_text.empty()
-    return pd.DataFrame(current_data), trails_data
+    return pd.DataFrame(current_data), vectors_data
 
 # --- 3. 页面渲染 ---
 tz = pytz.timezone('US/Eastern')
 update_time = datetime.now(tz).strftime('%Y-%m-%d %H:%M EST')
 
-st.title("🌪️ 宏观趋势雷达 (Monthly Trend)")
-st.caption(f"数据更新: {update_time} | 轨迹显示：过去1个月的路径 (每周采样)")
+st.title("🌪️ 宏观矢量雷达 (1-Week Vector)")
+st.caption(f"数据更新: {update_time} | 箭头含义：过去 1 周的瞬时运动方向")
 
-show_trails = st.sidebar.checkbox("显示月度路径", value=True)
+show_trails = st.sidebar.checkbox("显示方向短尾", value=True)
 
-df_now, trails = get_market_data_smooth(ASSETS)
+df_now, vectors = get_market_data_vector(ASSETS)
 
 if not df_now.empty:
     fig = go.Figure()
 
-    # --- A. 画平滑轨迹 ---
+    # --- A. 画短尾巴 (矢量线) ---
     if show_trails:
-        for trail in trails:
-            curr_mom = trail['Y'][-1]
+        for vec in vectors:
+            curr_mom = vec['Y'][-1] # 当前动量
             
             # 颜色逻辑：动量高红，低绿
-            color = "rgba(200, 200, 200, 0.2)" # 默认极淡的灰色
-            if curr_mom > 5: color = "rgba(255, 80, 80, 0.4)" # 红
-            elif curr_mom < -5: color = "rgba(80, 255, 80, 0.4)" # 绿
+            # 线条稍微透明一点，不要喧宾夺主
+            color = "rgba(200, 200, 200, 0.4)" 
+            if curr_mom > 5: color = "rgba(255, 80, 80, 0.6)" 
+            elif curr_mom < -5: color = "rgba(80, 255, 80, 0.6)" 
             
-            # 画线 (平滑的月度路径)
+            # 画线 (只连两个点)
             fig.add_trace(go.Scatter(
-                x=trail['X'],
-                y=trail['Y'],
-                mode='lines', # 纯线
-                line=dict(color=color, width=1.5), # 稍微加粗一点点
-                hoverinfo='skip',
-                showlegend=False
-            ))
-            
-            # 起点标记 (一个月前在哪里)
-            fig.add_trace(go.Scatter(
-                x=[trail['X'][0]],
-                y=[trail['Y'][0]],
-                mode='markers',
-                marker=dict(size=2, color=color),
+                x=vec['X'],
+                y=vec['Y'],
+                mode='lines',
+                line=dict(color=color, width=2), # 线条短而有力
                 hoverinfo='skip',
                 showlegend=False
             ))
 
-    # --- B. 画当前点 ---
+    # --- B. 画当前点 (大球) ---
     fig.add_trace(go.Scatter(
         x=df_now['Z-Score'],
         y=df_now['Momentum'],
@@ -205,7 +177,7 @@ if not df_now.empty:
         text=df_now['Name'],
         textposition="top center",
         marker=dict(
-            size=16, # 球大一点
+            size=16, 
             color=df_now['Momentum'], 
             colorscale='RdYlGn', 
             showscale=True,
@@ -240,8 +212,7 @@ if not df_now.empty:
     st.plotly_chart(fig, use_container_width=True)
     
     with st.expander("查看详细数据表"):
-        # 表格修复了，这里会正常显示
         st.dataframe(df_now.sort_values(by="Z-Score", ascending=False).style.background_gradient(subset=['Momentum'], cmap='RdYlGn'), use_container_width=True)
 
 else:
-    st.info("正在初始化数据，请稍等...")
+    st.info("正在扫描全球市场，请稍等...")
