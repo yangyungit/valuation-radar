@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 基础配置 ---
-st.set_page_config(page_title="宏观雷达 (白盒版)", layout="wide")
+st.set_page_config(page_title="宏观雷达 (完整版)", layout="wide")
 
 # 纯净版资产池
 ASSETS = {
@@ -22,7 +22,7 @@ ASSETS = {
     "越南股市": "VNM",
 
     # --- 核心行业 ---
-    "AI机器人": "BOTZ",
+    "机器人": "BOTZ",     # 修正名称
     "半导体": "SMH",
     "科技": "XLK",
     "金融": "XLF",
@@ -32,6 +32,8 @@ ASSETS = {
     "房地产": "XLRE",
     "消费": "XLY",
     "公用事业": "XLU",
+    "军工": "ITA",         # 新增
+    "农业": "DBA",         # 新增
 
     # --- 加密货币 ---
     "比特币": "BTC-USD",
@@ -56,11 +58,10 @@ ASSETS = {
 @st.cache_data(ttl=3600*12) 
 def get_market_data(tickers):
     end_date = datetime.now()
-    # 下载11年数据，确保有足够历史做滚动计算
     start_date = end_date - timedelta(days=365*11)
     
     display_years = 10
-    rolling_window = 252 # 核心参数：滚动1年
+    rolling_window = 252 
     
     status_text = st.empty()
     status_text.text(f"📥 正在扫描全球资产 (10年历史)...")
@@ -72,7 +73,7 @@ def get_market_data(tickers):
     except:
         return pd.DataFrame() 
     
-    status_text.text("⚡ 正在计算 Z-Score 与动量因子...")
+    status_text.text("⚡ 正在计算因子...")
     
     processed_dfs = []
     
@@ -84,7 +85,6 @@ def get_market_data(tickers):
             series_vol = raw_volume[ticker].dropna()
             if len(series_price) < rolling_window + 60: continue
 
-            # 重采样为周频，减少噪点
             price_weekly = series_price.resample('W-FRI').last()
             vol_weekly = series_vol.resample('W-FRI').mean()
             
@@ -92,8 +92,7 @@ def get_market_data(tickers):
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
             for date in display_dates:
-                # --- 核心算法逻辑 ---
-                # 1. 切片：获取"当时"过去一年的数据
+                # Rolling Window
                 window_price = series_price.loc[:date].tail(rolling_window)
                 window_vol = series_vol.loc[:date].tail(rolling_window)
                 
@@ -106,11 +105,11 @@ def get_market_data(tickers):
                 
                 if p_std == 0: continue
 
-                # 2. 计算 Z-Score (位置因子)
+                # Z-Score
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
                 
-                # 3. 计算 Momentum (速度因子) - 过去4周(20交易日)
+                # Momentum
                 lookback_date = date - timedelta(weeks=4)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -120,7 +119,7 @@ def get_market_data(tickers):
                     else: momentum = 0
                 except: momentum = 0
                 
-                # 4. 计算 Volume Z-Score (确认因子)
+                # Vol Z-Score
                 vol_val = vol_weekly.loc[date]
                 vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
                 
@@ -129,7 +128,7 @@ def get_market_data(tickers):
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'), 
                     "Name": name,
-                    "Ticker": ticker,
+                    "Ticker": ticker, 
                     "Z-Score": round(z_score, 2),
                     "Momentum": round(momentum, 2),
                     "Vol_Z": round(vol_z, 2),
@@ -156,6 +155,7 @@ if not df_anim.empty:
     range_x = [-4.5, 4.5]
     range_y = [-50, 60] 
 
+    # 气泡图
     fig = px.scatter(
         df_anim, 
         x="Z-Score", y="Momentum", 
@@ -172,6 +172,7 @@ if not df_anim.empty:
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
+    # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 主升/拥挤", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 爆发/抢筹", showarrow=False, font=dict(color="#00FF00"))
     fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
@@ -190,6 +191,7 @@ if not df_anim.empty:
         ]
     )]
 
+    # 进度条
     fig.layout.sliders[0].active = len(all_dates) - 1
     fig.layout.sliders[0].currentvalue.prefix = "" 
     fig.layout.sliders[0].currentvalue.font.size = 20
@@ -204,24 +206,37 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- 4. 数据来源与方法论说明 (Transparency) ---
-    with st.expander("⚠️ 数据来源与算法逻辑说明 (Data & Methodology)", expanded=False):
+    # --- 4. 深度局限性说明 (The Whitebox + Risk Disclosure) ---
+    with st.expander("⚠️ 详细局限性、数据来源与算法说明 (Detailed Methodology & Risks)", expanded=False):
         st.markdown("""
-        ### 1. 数据来源 (Data Source)
-        * **接口:** Yahoo Finance (via `yfinance` library).
-        * **价格:** 使用 **复权收盘价 (Adjusted Close)**，已包含分红与拆股调整。
-        * **频率:** 日频数据 (Daily)，重采样为周频 (Weekly) 用于平滑展示。
+        ### I. 数据来源与算法 (Data & Algorithms)
+        * **数据源:** Yahoo Finance (复权收盘价)。
+        * **Z-Score (估值):** 基于 **滚动 1 年 (252交易日)** 的均值计算。公式: $Z = (P - Mean) / Std$。
+        * **Momentum (动量):** 过去 4 周 (20交易日) 的涨跌幅。
+        * **Vol_Z (量能):** 成交量的 Z-Score，用于衡量拥挤度。
 
-        ### 2. 计算逻辑 (Calculation Logic)
-        * **估值 (X轴 Z-Score):** 基于 **滚动 1 年 (252交易日)** 的均值和标准差计算。
-            * 公式: $Z = (Current - Mean_{1y}) / Std_{1y}$
-            * 含义: 当前价格相对于过去一年平均成本的偏离程度。
-        * **动量 (Y轴 Momentum):** **过去 4 周 (20交易日)** 的涨跌幅。
-        * **量能 (气泡大小 Vol_Z):** 成交量的 Z-Score (同样基于滚动 1 年)。
-
-        ### 3. 已知局限 (Limitations)
-        * **生存者偏差:** 仅包含当前存续的 ETF，不包含历史退市标的。
-        * **数据延迟:** 免费数据源可能存在 15 分钟或更长时间的延迟，仅供宏观研判，不可用于高频交易。
+        ---
+        
+        ### II. 五大关键局限性 (Critical Limitations)
+        
+        #### 1. 幸存者偏差 (Survivorship Bias)
+        * **问题：** 当前的资产列表是基于 **2026年** 的视角选取的。
+        * **影响：** 回看 2015 年数据时，我们看到了当时的“赢家”（如 Nvidia, Bitcoin），但忽略了当时存在但后来退市或破产的公司/代币（如 LUNA, FTX, 或某些退市的中概股）。这会导致历史回测看起来比实际情况更乐观。
+        
+        #### 2. 滚动窗口的“近视效应” (Rolling Window Bias)
+        * **算法：** 本图表的 Z-Score 是基于 **“当时的过去一年”** 计算的。
+        * **局限：** 如果市场发生 **结构性突变 (Structural Break)**，例如利率从 0% 永久升至 5%，旧的估值中枢会失效。此时 Z-Score = -2 可能不是“便宜”，而是“价值重估”。不要刻舟求剑。
+        
+        #### 3. 正态分布假设谬误 (Normality Assumption)
+        * **问题：** Z-Score 假设价格波动服从正态分布。
+        * **现实：** 金融市场存在 **肥尾效应 (Fat Tails)**。在黑天鹅事件中，资产价格可能会跌至 -5甚至 -10个标准差。Z-Score < -2 只是统计学上的低估，不代表物理上的底。
+        
+        #### 4. 波动率量纲差异 (Volatility Scale)
+        * **问题：** 图表中比特币（高波）和美债（低波）放在同一个坐标系中。
+        * **影响：** 美债的 Z-Score +2 可能意味着 2% 的涨幅，而比特币的 Z-Score +2 意味着 50% 的涨幅。**位置代表的是“相对自身历史的极端程度”，而不是绝对收益率。**
+        
+        #### 5. 数据源精度 (Data Quality)
+        * 数据源为 Yahoo Finance 免费接口，可能存在分红/拆股调整延迟，不适用于高频交易决策。
         """)
 
     # 静态表格
