@@ -126,4 +126,114 @@ def get_market_data(tickers):
                 
                 # Vol Z-Score
                 vol_val = vol_weekly.loc[date]
-                vol_z = (vol_
+                vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
+                
+                size_metric = max(5, min(10 + (vol_z * 8), 60))
+                
+                processed_dfs.append({
+                    "Date": date.strftime('%Y-%m-%d'), 
+                    "Name": name,
+                    "Ticker": ticker, 
+                    "Z-Score": round(z_score, 2),
+                    "Momentum": round(momentum, 2),
+                    "Vol_Z": round(vol_z, 2),
+                    "Price": round(price_val, 2),
+                    "Size": size_metric 
+                })
+        except: continue
+
+    status_text.empty()
+    full_df = pd.DataFrame(processed_dfs)
+    if not full_df.empty:
+        full_df = full_df.sort_values(by="Date")
+    return full_df
+
+# --- 3. 页面渲染 ---
+st.title(f"🔭 宏观雷达 (Pro)")
+
+df_anim = get_market_data(ASSETS)
+
+if not df_anim.empty:
+    
+    all_dates = sorted(df_anim['Date'].unique())
+    
+    range_x = [-4.5, 4.5]
+    range_y = [-50, 60] 
+
+    # 气泡图：只显示中文 Name
+    fig = px.scatter(
+        df_anim, 
+        x="Z-Score", y="Momentum", 
+        animation_frame="Date", animation_group="Name", 
+        text="Name", hover_name="Name",
+        hover_data=["Ticker", "Price", "Vol_Z"], 
+        color="Momentum", size="Size", size_max=50, 
+        range_x=range_x, range_y=range_y, 
+        color_continuous_scale="RdYlGn", range_color=[-20, 40],
+        title=""
+    )
+
+    fig.update_traces(cliponaxis=False, textposition='top center', marker=dict(line=dict(width=1, color='black')))
+    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+    fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
+
+    # 区域标注
+    fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 主升/拥挤", showarrow=False, font=dict(color="red"))
+    fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 爆发/抢筹", showarrow=False, font=dict(color="#00FF00"))
+    fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 冷宫/吸筹", showarrow=False, font=dict(color="gray"))
+    fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 崩盘/主跌", showarrow=False, font=dict(color="orange"))
+
+    # 动画控件：慢速播放 (400ms)
+    settings_play = dict(frame=dict(duration=400, redraw=True), fromcurrent=True, transition=dict(duration=100))
+    settings_rewind = dict(frame=dict(duration=100, redraw=True), fromcurrent=True, transition=dict(duration=0))
+
+    fig.layout.updatemenus = [dict(
+        type="buttons", showactive=False, direction="left", x=0.0, y=-0.15,
+        buttons=[
+            dict(label="⏪ 倒放", method="animate", args=[all_dates[::-1], settings_rewind]),
+            dict(label="▶️ 正放", method="animate", args=[None, settings_play]),
+            dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])
+        ]
+    )]
+
+    # 默认最新状态
+    fig.layout.sliders[0].active = len(all_dates) - 1
+    fig.layout.sliders[0].currentvalue.prefix = "" 
+    fig.layout.sliders[0].currentvalue.font.size = 20
+    fig.layout.sliders[0].pad = {"t": 50} 
+    
+    fig.update_layout(
+        height=750, template="plotly_dark",
+        margin=dict(l=40, r=40, t=20, b=100),
+        xaxis=dict(visible=True, showticklabels=True, title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->"),
+        yaxis=dict(title="<-- 资金流出  |  资金流入 -->")
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("⚠️ 局限性与方法论说明 (Limitations & Methodology)", expanded=False):
+        st.markdown("""
+        * **数据源：** 使用 Yahoo Finance 免费接口。
+        * **机器人板块 (BOTZ):** 成立时间较短（2016年），早期历史数据缺失属于正常现象，代表了机器人与自动化赛道。
+        * **军工与农业:** 分别使用 ITA 和 DBA 作为行业代表。
+        """)
+
+    # 静态表格 (含Ticker)
+    st.markdown("### 📊 最新数据快照")
+    latest_date = df_anim['Date'].iloc[-1]
+    df_latest = df_anim[df_anim['Date'] == latest_date]
+    
+    # 调整列顺序，增加Ticker
+    display_cols = ['Name', 'Ticker', 'Z-Score', 'Momentum', 'Vol_Z', 'Price']
+    
+    st.dataframe(
+        df_latest[display_cols]
+        .sort_values(by="Z-Score", ascending=False)
+        .style
+        .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40) 
+        .background_gradient(subset=['Vol_Z'], cmap='Blues', vmin=0, vmax=3),
+        use_container_width=True
+    )
+
+else:
+    st.info("数据下载中，请稍候...")
