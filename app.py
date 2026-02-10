@@ -6,91 +6,119 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 基础配置 ---
-st.set_page_config(page_title="宏观雷达 (精细版)", layout="wide")
+st.set_page_config(page_title="宏观雷达 (合成指数版)", layout="wide")
 
-# 纯净版资产池 (修正：加入防御龙头)
-ASSETS = {
-    # --- 全球核心指数 ---
+# --- 2. 定义资产池与合成组合 ---
+# 单一资产 (直接下载)
+SINGLE_ASSETS = {
+    # 全球宏观
     "标普500": "SPY",
     "纳指100": "QQQ",
     "罗素小盘": "IWM",
     "中概互联": "KWEB",
     "中国大盘": "FXI",
     "日本股市": "EWJ",
-    "印度股市": "INDA",
     "欧洲股市": "VGK",
     "越南股市": "VNM",
+    "印度股市": "INDA",
 
-    # --- 消费板块拆解 (重点修正) ---
-    "可选消费(XLY)": "XLY",   # 进攻型板块
-    "必选消费(XLP)": "XLP",   # 防守型板块(被平均过的)
-    "🛒 沃尔玛 (WMT)": "WMT", # 独立监控：防御龙头
-    "🛒 好市多 (COST)": "COST",# 独立监控：防御龙头
-
-    # --- 核心行业 ---
+    # 核心板块
     "半导体": "SMH",
-    "科技巨头": "XLK",
-    "机器人": "BOTZ",
     "金融": "XLF",
     "能源": "XLE",
     "医疗": "XLV",
     "工业": "XLI",
-    "房地产": "XLRE",
-    "公用事业": "XLU",
     "军工": "ITA",
     "农业": "DBA",
-
-    # --- 加密货币 ---
+    
+    # 资产
     "比特币": "BTC-USD",
     "以太坊": "ETH-USD",
-
-    # --- 大宗商品 ---
     "黄金": "GLD",
     "白银": "SLV",
     "铜矿": "COPX",
     "原油": "USO",
     "天然气": "UNG",
-    "铀矿": "URA",
-
-    # --- 利率与外汇 ---
-    "美元指数": "UUP",
-    "日元": "FXY",
     "20年美债": "TLT",
-    "高收益债": "HYG"
+    "美元指数": "UUP",
+    "日元": "FXY"
 }
 
-# --- 2. 核心数据引擎 (1年展示 / 滚动1年基准) ---
+# 合成组合 (Basket): 后台下载成分股 -> 合成等权指数
+CUSTOM_BASKETS = {
+    "🚀 科技七姐妹": ["NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA"],
+    "🛡️ 必选消费精英": ["WMT", "COST", "KO", "PG", "PEP"], # 沃尔玛, 好市多, 可乐, 宝洁, 百事
+    "📉 垃圾债": ["HYG", "JNK"] # 用两个ETF合成更稳
+}
+
+# --- 3. 核心引擎 (支持合成指数) ---
 @st.cache_data(ttl=3600*12) 
-def get_market_data(tickers):
+def get_market_data():
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365*2.5) # 拉取2.5年以保证计算精度
+    start_date = end_date - timedelta(days=365*2.5) # 2.5年数据保证计算精度
     
-    display_years = 1 # 只展示最近 1 年
+    display_years = 1 
     rolling_window = 252 
-    
+
     status_text = st.empty()
-    status_text.text(f"📥 正在扫描全市场 (含必选消费板块)...")
-    
+    status_text.text(f"📥 正在构建合成指数与宏观数据...")
+
+    # 1. 收集所有需要下载的 Ticker (去重)
+    all_tickers = list(SINGLE_ASSETS.values())
+    for tickers in CUSTOM_BASKETS.values():
+        all_tickers.extend(tickers)
+    all_tickers = list(set(all_tickers))
+
     try:
-        data = yf.download(list(tickers.values()), start=start_date, end=end_date, progress=False, auto_adjust=True)
+        # 批量下载
+        data = yf.download(all_tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)
         raw_close = data['Close']
         raw_volume = data['Volume']
     except:
-        return pd.DataFrame() 
-    
-    status_text.text("⚡ 正在计算因子...")
-    
+        return pd.DataFrame()
+
+    status_text.text("⚡ 正在合成 '七姐妹' 与 '消费精英' 指数...")
+
+    # --- 数据处理与合成逻辑 ---
     processed_dfs = []
     
-    for name, ticker in tickers.items():
+    # A. 处理单一资产
+    check_list = list(SINGLE_ASSETS.items())
+    # B. 处理合成资产 (这是关键一步)
+    #    我们在内存中创建一个"虚拟"的价格序列
+    for name, components in CUSTOM_BASKETS.items():
+        # 获取成分股的日收益率
+        valid_components = [t for t in components if t in raw_close.columns]
+        if not valid_components: continue
+        
+        # 计算等权重收益率 (Equal Weighted Return)
+        # 每天的涨跌幅 = 所有成分股涨跌幅的平均值
+        basket_returns = raw_close[valid_components].pct_change().mean(axis=1)
+        
+        # 重新构建净值曲线 (假设初始值为100)
+        # (1 + r1) * (1 + r2) ...
+        synthetic_price = (1 + basket_returns).cumprod() * 100
+        
+        # 暂时把合成的价格塞进 raw_close (为了复用下面的逻辑，虽然有点hack但很高效)
+        # 注意：这里我们不需要Volume，因为合成指数的Volume很难定义，我们暂设为0或平均
+        raw_close[name] = synthetic_price
+        raw_volume[name] = raw_volume[valid_components].mean(axis=1) # 简单的平均量
+        
+        # 把合成的名字加入待处理列表
+        check_list.append((name, name))
+
+    # --- 统一计算 Z-Score ---
+    for name, ticker in check_list:
         try:
-            if ticker not in raw_close.columns: continue
-            
+            # 如果是合成的，ticker就是name；如果是原始的，ticker就是代码
             series_price = raw_close[ticker].dropna()
             series_vol = raw_volume[ticker].dropna()
+            
             if len(series_price) < rolling_window + 20: continue
 
             price_weekly = series_price.resample('W-FRI').last()
+            
+            # 只有这里需要注意：合成指数的Volume没有太大意义，我们主要看价格位置
             vol_weekly = series_vol.resample('W-FRI').mean()
             
             target_start_date = end_date - timedelta(days=365 * display_years)
@@ -105,8 +133,6 @@ def get_market_data(tickers):
                 
                 p_mean = window_price.mean()
                 p_std = window_price.std()
-                v_mean = window_vol.mean()
-                v_std = window_vol.std()
                 
                 if p_std == 0: continue
 
@@ -125,13 +151,21 @@ def get_market_data(tickers):
                 except: momentum = 0
                 
                 # Vol Z-Score
-                vol_val = vol_weekly.loc[date]
-                vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
+                if ticker in CUSTOM_BASKETS:
+                    vol_z = 0 # 合成指数暂不显示量能异动，避免数据失真
+                else:
+                    v_mean = window_vol.mean()
+                    v_std = window_vol.std()
+                    vol_val = vol_weekly.loc[date]
+                    vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
                 
+                # 获取真实代码用于展示 (如果是合成的，展示成分股数量)
+                display_ticker = ticker if ticker not in CUSTOM_BASKETS else f"Basket({len(CUSTOM_BASKETS[ticker])})"
+
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'), 
                     "Name": name,
-                    "Ticker": ticker, 
+                    "Ticker": display_ticker, 
                     "Z-Score": round(z_score, 2),
                     "Momentum": round(momentum, 2),
                     "Vol_Z": round(vol_z, 2),
@@ -145,10 +179,10 @@ def get_market_data(tickers):
         full_df = full_df.sort_values(by="Date")
     return full_df
 
-# --- 3. 页面渲染 ---
-st.title(f"🔭 宏观雷达 (1年战术版)")
+# --- 4. 页面渲染 ---
+st.title(f"🔭 宏观雷达 (精英合成版)")
 
-df_anim = get_market_data(ASSETS)
+df_anim = get_market_data()
 
 if not df_anim.empty:
     
@@ -156,7 +190,7 @@ if not df_anim.empty:
     range_x = [-4.0, 4.0]
     range_y = [-40, 50] 
 
-    # 气泡图 (固定大小圆点)
+    # 气泡图
     fig = px.scatter(
         df_anim, 
         x="Z-Score", y="Momentum", 
@@ -209,10 +243,11 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("⚠️ 数据来源与方法论说明 (Methodology)", expanded=False):
+    with st.expander("⚠️ 合成指数说明 (Methodology)", expanded=False):
         st.markdown("""
-        * **消费板块拆分：** 特别拆分为**“可选消费 (XLY)”** (含亚马逊、特斯拉，周期性强) 和 **“必选消费 (XLP)”** (含沃尔玛、可口可乐，防御性强)，以准确反映资金的避险情绪。
-        * **1年战术视角:** 聚焦最近 1 年数据。
+        * **🚀 科技七姐妹:** 等权重合成 (NVDA, AAPL, MSFT, GOOG, AMZN, META, TSLA)。代表美股最强进攻力量。
+        * **🛡️ 必选消费精英:** 等权重合成 (WMT, COST, KO, PG, PEP)。剔除了板块中的垃圾股，只看最强防御龙头。
+        * **原理:** 我们在后台下载了这些个股的原始数据，实时计算它们的等权净值曲线，再将其放入宏观雷达进行对比。
         """)
 
     st.markdown("### 📊 最新数据快照")
@@ -231,4 +266,4 @@ if not df_anim.empty:
     )
 
 else:
-    st.info("正在获取最新数据...")
+    st.info("正在合成精英指数并获取数据...")
