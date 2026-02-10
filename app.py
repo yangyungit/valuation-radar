@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- 1. 基础配置 ---
-st.set_page_config(page_title="宏观雷达 (1年战术版)", layout="wide")
+st.set_page_config(page_title="宏观雷达 (精细版)", layout="wide")
 
 # 纯净版资产池
 ASSETS = {
@@ -21,16 +21,19 @@ ASSETS = {
     "欧洲股市": "VGK",
     "越南股市": "VNM",
 
+    # --- 细分消费板块 (修正点) ---
+    "可选消费(亚马逊/特斯拉)": "XLY",  # 进攻型
+    "必选消费(沃尔玛/可乐)": "XLP",   # 防守型 (你关注的WMT, COST都在这)
+
     # --- 核心行业 ---
-    "机器人": "BOTZ",
     "半导体": "SMH",
-    "科技": "XLK",
+    "科技巨头": "XLK",
+    "机器人": "BOTZ",
     "金融": "XLF",
     "能源": "XLE",
     "医疗": "XLV",
     "工业": "XLI",
     "房地产": "XLRE",
-    "消费": "XLY",
     "公用事业": "XLU",
     "军工": "ITA",
     "农业": "DBA",
@@ -58,15 +61,13 @@ ASSETS = {
 @st.cache_data(ttl=3600*12) 
 def get_market_data(tickers):
     end_date = datetime.now()
-    # 核心逻辑：虽然只展示1年，但需要下载2年多数据
-    # 理由：为了计算第一天的 Rolling Z-Score，我们需要它之前1年的数据作为分母
-    start_date = end_date - timedelta(days=365*2.5)
+    start_date = end_date - timedelta(days=365*2.5) # 拉取2.5年以保证计算精度
     
     display_years = 1 # 只展示最近 1 年
-    rolling_window = 252 # 滚动 1 年基准
+    rolling_window = 252 
     
     status_text = st.empty()
-    status_text.text(f"📥 正在构建1年战术雷达...")
+    status_text.text(f"📥 正在扫描全市场 (含必选消费板块)...")
     
     try:
         data = yf.download(list(tickers.values()), start=start_date, end=end_date, progress=False, auto_adjust=True)
@@ -90,7 +91,6 @@ def get_market_data(tickers):
             price_weekly = series_price.resample('W-FRI').last()
             vol_weekly = series_vol.resample('W-FRI').mean()
             
-            # 这里的 display_years 改成了 1
             target_start_date = end_date - timedelta(days=365 * display_years)
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
             
@@ -122,7 +122,7 @@ def get_market_data(tickers):
                     else: momentum = 0
                 except: momentum = 0
                 
-                # Vol Z-Score (仅计算用于表格展示，不影响气泡大小)
+                # Vol Z-Score
                 vol_val = vol_weekly.loc[date]
                 vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
                 
@@ -134,7 +134,6 @@ def get_market_data(tickers):
                     "Momentum": round(momentum, 2),
                     "Vol_Z": round(vol_z, 2),
                     "Price": round(price_val, 2)
-                    # "Size": 已移除
                 })
         except: continue
 
@@ -152,12 +151,10 @@ df_anim = get_market_data(ASSETS)
 if not df_anim.empty:
     
     all_dates = sorted(df_anim['Date'].unique())
-    
-    # 战术版范围可以稍微聚焦一点，但为了包容BTC，还是保持适度宽阔
     range_x = [-4.0, 4.0]
     range_y = [-40, 50] 
 
-    # 气泡图：移除 size 参数，回归固定圆点
+    # 气泡图 (固定大小圆点)
     fig = px.scatter(
         df_anim, 
         x="Z-Score", y="Momentum", 
@@ -165,30 +162,25 @@ if not df_anim.empty:
         text="Name", hover_name="Name",
         hover_data=["Ticker", "Price", "Vol_Z"], 
         color="Momentum", 
-        # size="Size",  <-- 已移除
-        # size_max=50,  <-- 已移除
         range_x=range_x, range_y=range_y, 
         color_continuous_scale="RdYlGn", range_color=[-20, 40],
         title=""
     )
 
-    # 视觉优化：设置固定的 Marker 大小，保证清晰
     fig.update_traces(
         cliponaxis=False, 
         textposition='top center', 
-        marker=dict(size=14, line=dict(width=1, color='black')) # 固定大小 14
+        marker=dict(size=14, line=dict(width=1, color='black'))
     )
     
     fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
     fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
-    # 区域标注
     fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 强势/拥挤", showarrow=False, font=dict(color="red"))
     fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 反转/启动", showarrow=False, font=dict(color="#00FF00"))
     fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 弱势/冷宫", showarrow=False, font=dict(color="gray"))
     fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 补跌/崩盘", showarrow=False, font=dict(color="orange"))
 
-    # 动画控件
     settings_play = dict(frame=dict(duration=400, redraw=True), fromcurrent=True, transition=dict(duration=100))
     settings_rewind = dict(frame=dict(duration=100, redraw=True), fromcurrent=True, transition=dict(duration=0))
 
@@ -215,15 +207,12 @@ if not df_anim.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 局限性说明 (文案更新)
     with st.expander("⚠️ 数据来源与方法论说明 (Methodology)", expanded=False):
         st.markdown("""
-        * **1年战术视角:** 本图表聚焦于最近 1 年的市场动态，旨在捕捉中短期趋势。
-        * **算法一致性:** 尽管只显示 1 年，Z-Score 依然基于**完整 1 年的滚动窗口**计算 (后台拉取了 2.5 年数据)，确保每一天的估值逻辑都是数学严谨的。
-        * **圆点大小:** 已移除成交量加权，所有资产显示为统一大小，优先保证可读性和互不遮挡。
+        * **消费板块拆分：** 特别拆分为**“可选消费 (XLY)”** (含亚马逊、特斯拉，周期性强) 和 **“必选消费 (XLP)”** (含沃尔玛、可口可乐，防御性强)，以准确反映资金的避险情绪。
+        * **1年战术视角:** 聚焦最近 1 年数据。
         """)
 
-    # 静态表格
     st.markdown("### 📊 最新数据快照")
     latest_date = df_anim['Date'].iloc[-1]
     df_latest = df_anim[df_anim['Date'] == latest_date]
@@ -240,4 +229,4 @@ if not df_anim.empty:
     )
 
 else:
-    st.info("正在获取最新战术数据...")
+    st.info("正在获取最新数据...")
