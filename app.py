@@ -70,7 +70,7 @@ CUSTOM_BASKETS = {
 
 # --- 3. 核心引擎 (支持合成指数) ---
 @st.cache_data(ttl=3600*12) 
-def get_market_data():
+def get_market_data(single_dict, basket_dict):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365*2.5) # 2.5年数据保证计算精度
     
@@ -81,8 +81,8 @@ def get_market_data():
     status_text.text(f"📥 正在构建合成指数与宏观数据...")
 
     # 1. 收集所有需要下载的 Ticker (去重)
-    all_tickers = list(SINGLE_ASSETS.values())
-    for tickers in CUSTOM_BASKETS.values():
+    all_tickers = list(single_dict.values())
+    for tickers in basket_dict.values():
         all_tickers.extend(tickers)
     all_tickers = list(set(all_tickers))
 
@@ -199,7 +199,7 @@ def get_market_data():
 # --- 4. 页面渲染 ---
 st.title(f"🔭 宏观雷达 (精英合成版)")
 
-df_anim = get_market_data()
+df_anim = get_market_data(SINGLE_ASSETS, CUSTOM_BASKETS)
 
 if not df_anim.empty:
     
@@ -258,12 +258,12 @@ if not df_anim.empty:
         yaxis=dict(title="<-- 资金流出  |  资金流入 -->")
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     with st.expander("⚠️ 合成指数说明 (Methodology)", expanded=False):
         st.markdown("""
-        * **🚀 科技七姐妹:** 等权重合成 (NVDA, AAPL, MSFT, GOOG, AMZN, META, TSLA)。代表美股最强进攻力量。
-        * **🛡️ 必选消费精英:** 等权重合成 (WMT, COST, KO, PG, PEP)。剔除了板块中的垃圾股，只看最强防御龙头。
+        * **科技七姐妹:** 等权重合成 (NVDA, AAPL, MSFT, GOOG, AMZN, META, TSLA)。代表美股最强进攻力量。
+        * **必选消费:** 等权重合成 (WMT, COST, KO, PG, PEP)。剔除了板块中的垃圾股，只看最强防御龙头。
         * **原理:** 我们在后台下载了这些个股的原始数据，实时计算它们的等权净值曲线，再将其放入宏观雷达进行对比。
         """)
 
@@ -279,7 +279,7 @@ if not df_anim.empty:
         .style
         .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40) 
         .background_gradient(subset=['Vol_Z'], cmap='Blues', vmin=0, vmax=3),
-        use_container_width=True
+        width='stretch'
     )
 
 else:
