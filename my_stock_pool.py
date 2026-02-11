@@ -13,7 +13,7 @@ PORTFOLIO_CONFIG = {
     "C (时代之王)": ["TSLA", "VRT", "NVDA", "PLTR", "NOC", "XAR", "XLP", "MS", "GS", "LMT", "ANET", "ETN", "BTC-USD", "GOLD"]
 }
 
-# --- 2. 核心计算引擎 ---
+# --- 2. 核心计算引擎 (完全采用原版宏观雷达底层防错逻辑) ---
 def get_unique_tickers():
     all_tickers = []
     for tickers in PORTFOLIO_CONFIG.values():
@@ -35,7 +35,9 @@ def get_market_data():
 
     tickers = get_unique_tickers()
     try:
-        data = yf.download(tickers, start=start_date, end=end_date, group_by='ticker', progress=False)
+        # 关键修复1：加入 auto_adjust=True (前复权)，摒弃 group_by，防止分红除息导致的动量断层
+        data = yf.download(tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)
+        raw_close = data['Close']
     except Exception as e:
         return pd.DataFrame()
 
@@ -43,13 +45,11 @@ def get_market_data():
 
     for ticker in tickers:
         try:
-            df = data[ticker] if len(tickers) > 1 else data
+            if ticker not in raw_close.columns: continue
             
-            if 'Close' not in df.columns: continue
-            df = df.dropna(subset=['Close'])
-            if len(df) < rolling_window + 20: continue
+            series_price = raw_close[ticker].dropna()
+            if len(series_price) < rolling_window + 20: continue
 
-            series_price = df['Close']
             price_weekly = series_price.resample('W-FRI').last()
 
             target_start_date = end_date - timedelta(days=365 * display_years)
@@ -90,7 +90,8 @@ def get_market_data():
 
     full_df = pd.DataFrame(processed_dfs)
     if not full_df.empty:
-        full_df = full_df.sort_values(by="Date")
+        # 关键修复2：极其严格的双重排序！强制 Plotly 每一帧的数据索引死死咬住，杜绝气泡“张冠李戴”
+        full_df = full_df.sort_values(by=["Date", "Ticker"])
     return full_df
 
 # --- 3. 页面渲染 (完全复刻原版 UI) ---
@@ -112,24 +113,21 @@ if not df_anim.empty:
     else:
         all_dates = sorted(filtered_df['Date'].unique())
         
-        # 1:1 还原原版的坐标轴范围，避免动画时画面乱跳
         range_x = [-4.0, 4.0]
         range_y = [-40, 50] 
 
-        # 核心气泡图
         fig = px.scatter(
             filtered_df, 
             x="Z-Score", y="Momentum", 
             animation_frame="Date", animation_group="Ticker", 
             text="Ticker", hover_name="Category",
             hover_data=["Price"], 
-            color="Momentum", # 动量决定颜色
+            color="Momentum", 
             range_x=range_x, range_y=range_y, 
-            color_continuous_scale="RdYlGn", range_color=[-20, 40], # 还原原版红绿渐变色带
+            color_continuous_scale="RdYlGn", range_color=[-20, 40], 
             title=""
         )
 
-        # 还原原版黑色边框的小圆点，去掉白边
         fig.update_traces(
             cliponaxis=False, 
             textposition='top center', 
@@ -139,7 +137,6 @@ if not df_anim.empty:
         fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
         fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
 
-        # 还原原版文案
         fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 强势/拥挤", showarrow=False, font=dict(color="red"))
         fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 反转/启动", showarrow=False, font=dict(color="#00FF00"))
         fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 弱势/冷宫", showarrow=False, font=dict(color="gray"))
@@ -162,7 +159,6 @@ if not df_anim.empty:
         fig.layout.sliders[0].currentvalue.font.size = 20
         fig.layout.sliders[0].pad = {"t": 50} 
         
-        # 还原原版深色主题和坐标轴文字
         fig.update_layout(
             height=750, template="plotly_dark",
             margin=dict(l=40, r=40, t=20, b=100),
