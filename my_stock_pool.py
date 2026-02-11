@@ -4,16 +4,20 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="核心标的池 - 动态追踪", layout="wide")
+# ---------------------------------------------------------
+# 全局配置：深色模式与页面标题
+st.set_page_config(page_title="核心资产雷达 (动量热力版)", layout="wide")
+# ---------------------------------------------------------
 
 # --- 1. 您的专属标的池 ---
+# 注意：如果一个标的同时出现在多个池子里，下面的代码会优先取最下面的分类（C优于B优于A）
 PORTFOLIO_CONFIG = {
-    "A: 防守股": ["GLD", "WMT", "TJX", "RSG", "LLY", "COST", "KO", "V", "BRK-B", "ISRG", "LMT", "WM", "JNJ", "LIN"],
-    "B: 核心资产": ["COST", "GOOGL", "MSFT", "AMZN", "PWR", "CACI", "AAPL", "MNST", "LLY", "XOM", "CVX", "WM"],
-    "C: 时代之王": ["TSLA", "VRT", "NVDA", "PLTR", "NOC", "XAR", "XLP", "MS", "GS", "LMT", "ANET", "ETN", "BTC-USD", "GOLD"]
+    "A (防守)": ["GLD", "WMT", "TJX", "RSG", "LLY", "COST", "KO", "V", "BRK-B", "ISRG", "LMT", "WM", "JNJ", "LIN"],
+    "B (核心)": ["COST", "GOOGL", "MSFT", "AMZN", "PWR", "CACI", "AAPL", "MNST", "LLY", "XOM", "CVX", "WM"],
+    "C (时代之王)": ["TSLA", "VRT", "NVDA", "PLTR", "NOC", "XAR", "XLP", "MS", "GS", "LMT", "ANET", "ETN", "BTC-USD", "GOLD"]
 }
 
-# --- 2. 核心计算引擎 (完全继承宏观雷达的 Z-Score 与 Momentum 时序逻辑) ---
+# --- 2. 核心计算引擎 ---
 def get_unique_tickers():
     all_tickers = []
     for tickers in PORTFOLIO_CONFIG.values():
@@ -21,17 +25,17 @@ def get_unique_tickers():
     return list(set(all_tickers))
 
 def get_category_label(ticker):
-    """给标的打上 A/B/C 标签"""
-    labels = []
-    for section, tickers in PORTFOLIO_CONFIG.items():
+    """给标的打上单一标签，强制不重叠"""
+    # 倒序遍历，优先级 C > B > A
+    for section, tickers in reversed(PORTFOLIO_CONFIG.items()):
         if ticker in tickers:
-            labels.append(section.split(":")[0])
-    return ", ".join(labels)
+            return section.split(" ")[0] # 只返回 A, B, 或 C
+    return "Other"
 
-@st.cache_data(ttl=3600*12) # 缓存半天
+@st.cache_data(ttl=3600*6) # 缓存6小时
 def get_market_data():
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365*2.5) # 取2.5年数据，保证Z-score能完整回溯1年
+    start_date = end_date - timedelta(days=365*2.5) # 取2.5年数据用于计算稳定的Z-Score
     display_years = 1
     rolling_window = 252
 
@@ -49,24 +53,24 @@ def get_market_data():
             df = data[ticker] if len(tickers) > 1 else data
             
             if 'Close' not in df.columns: continue
-            
             # 剔除空值，对齐美股与加密货币的时差
             df = df.dropna(subset=['Close'])
 
             if len(df) < rolling_window + 20: continue
 
             series_price = df['Close']
-            # 按周五重采样，平滑动画
+            # 按周五重采样，平滑动画路径
             price_weekly = series_price.resample('W-FRI').last()
 
-            # 只保留最近一年的日期用于动画进度条
+            # 只保留最近一年的日期用于动画展示
             target_start_date = end_date - timedelta(days=365 * display_years)
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
 
+            # 获取单一分类标签
             cat_label = get_category_label(ticker)
 
             for date in display_dates:
-                # 滚动计算 Z-Score
+                # 滚动计算 Z-Score (估值位置)
                 window_price = series_price.loc[:date].tail(rolling_window)
                 if len(window_price) < rolling_window * 0.9: continue
 
@@ -77,7 +81,7 @@ def get_market_data():
                 price_val = price_weekly.loc[date]
                 z_score = (price_val - p_mean) / p_std
 
-                # 滚动计算 4周动量 (Momentum)
+                # 滚动计算 4周动量 (Momentum / 资金流向代理)
                 lookback_date = date - timedelta(weeks=4)
                 try:
                     idx = series_price.index.searchsorted(lookback_date)
@@ -90,7 +94,7 @@ def get_market_data():
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'),
                     "Ticker": ticker,
-                    "Category": cat_label,
+                    "Category": cat_label, # 用于鼠标悬停显示
                     "Z-Score": round(float(z_score), 2),
                     "Momentum": round(float(momentum), 2),
                     "Price": round(float(price_val), 2)
@@ -103,68 +107,80 @@ def get_market_data():
         full_df = full_df.sort_values(by="Date")
     return full_df
 
-# --- 3. 页面渲染 (带一年的进度条和均匀小圆点) ---
-st.title("🎯 核心标的池 - 动态追踪 (一周年回放版)")
+# --- 3. 页面渲染 (深色主题 + 热力力图配色) ---
+st.title("🎯 核心资产雷达 (动量热力版)")
 
-# 侧边栏
-st.sidebar.header("⚙️ 显示设置")
-show_categories = st.sidebar.multiselect(
-    "选择显示的分类", ["A", "B", "C"], default=["A", "B", "C"]
+# 侧边栏过滤器
+st.sidebar.header("⚙️ 筛选工具")
+selected_cats = st.sidebar.multiselect(
+    "过滤分类 (A/B/C)", ["A", "B", "C"], default=["A", "B", "C"]
 )
 
-with st.spinner("正在构建长周期时序数据，生成一周年进度条..."):
+with st.spinner("正在加载深色模式与长周期数据..."):
     df_anim = get_market_data()
 
 if not df_anim.empty:
     # 筛选分类
-    mask = df_anim['Category'].apply(lambda x: any(c in x for c in show_categories))
-    filtered_df = df_anim[mask].copy()
+    filtered_df = df_anim[df_anim['Category'].isin(selected_cats)].copy()
 
     if filtered_df.empty:
         st.warning("没有符合筛选条件的数据。")
     else:
         all_dates = sorted(filtered_df['Date'].unique())
         
-        # 固定坐标轴范围以防动画跳动
-        x_min, x_max = filtered_df["Z-Score"].min() - 0.5, filtered_df["Z-Score"].max() + 0.5
-        y_min, y_max = filtered_df["Momentum"].min() - 5, filtered_df["Momentum"].max() + 5
+        # 计算颜色映射的动态范围 (让红绿对比更鲜明)
+        mom_min = filtered_df["Momentum"].quantile(0.05) # 去掉极端的5%
+        mom_max = filtered_df["Momentum"].quantile(0.95)
 
-        # 保留属于你A/B/C池的专属颜色分类
-        color_map = {
-            "A": "#2ca02c", "B": "#1f77b4", "C": "#d62728",
-            "A, B": "#17becf", "A, C": "#e377c2", "B, C": "#bcbd22"
-        }
-
-        # 核心雷达图
+        # --- 核心雷达图配置 (关键修改) ---
         fig = px.scatter(
             filtered_df,
             x="Z-Score", y="Momentum",
-            animation_frame="Date", animation_group="Ticker", # 激活进度条动画
-            text="Ticker", hover_name="Ticker",
-            hover_data=["Category", "Price"],
-            color="Category",
-            color_discrete_map=color_map,
-            range_x=[x_min, x_max], range_y=[y_min, y_max],
-            title="左: 便宜 (低 Z-Score) | 右: 昂贵 (高 Z-Score) <---> 下: 资金流出 | 上: 资金流入"
+            animation_frame="Date", animation_group="Ticker",
+            text="Ticker", 
+            hover_name="Category", # 鼠标放上去显示分类
+            hover_data=["Price", "Z-Score", "Momentum"],
+            
+            # 【关键修改】颜色由“动量”决定，使用红绿热力图
+            color="Momentum",
+            color_continuous_scale="RdYlGn", # 红-黄-绿 渐变
+            range_color=[mom_min, mom_max], # 动态设定颜色范围
+            
+            title="<b>核心资产相对位置图</b>"
         )
 
-        # 强制设置为小圆点，去掉气泡大小差异，完全复刻宏观雷达样式
+        # 【关键修改】样式微调：深色背景、扎实小圆点、清晰坐标轴
         fig.update_traces(
             cliponaxis=False,
             textposition='top center',
-            marker=dict(size=14, opacity=0.9, line=dict(width=1, color='DarkSlateGrey'))
+            textfont=dict(color='white'), # 深色背景下文字改白色
+            # size=14, opacity=1.0 (不透明), 白色细描边
+            marker=dict(size=14, opacity=1.0, line=dict(width=1, color='white'))
         )
         
-        fig.add_hline(y=0, line_dash="dash", line_color="gray")
-        fig.add_vline(x=0, line_dash="dash", line_color="gray")
+        # 使用深色模板，瞬间提升质感
+        fig.update_layout(
+            template="plotly_dark", 
+            height=700, 
+            margin=dict(l=60, r=40, t=60, b=100),
+            # 清晰的坐标轴标签
+            xaxis=dict(title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->", showgrid=True, gridcolor='#444'),
+            yaxis=dict(title="<-- 资金流出 (弱势)  |  资金流入 (强势) -->", showgrid=True, gridcolor='#444'),
+            # 隐藏颜色条，让画面更干净(可选)
+            coloraxis_showscale=False
+        )
         
-        # 动态区域标注
-        fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 黄金坑", showarrow=False, font=dict(color="green"))
-        fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 顶部狂热", showarrow=False, font=dict(color="red"))
-        fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="❄️ 深度冻结", showarrow=False, font=dict(color="blue"))
-        fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 顶部派发", showarrow=False, font=dict(color="orange"))
+        # 添加中心十字辅助线
+        fig.add_hline(y=0, line_dash="dash", line_color="#888")
+        fig.add_vline(x=0, line_dash="dash", line_color="#888")
+        
+        # 动态区域标注 (适配深色背景的亮色文字)
+        fig.add_annotation(x=0.02, y=0.98, xref="paper", yref="paper", text="💎 黄金坑 (便宜+启动)", showarrow=False, font=dict(color="#00FF00", size=14))
+        fig.add_annotation(x=0.98, y=0.98, xref="paper", yref="paper", text="🔥 顶部狂热 (贵+强势)", showarrow=False, font=dict(color="#FF3333", size=14), xanchor="right")
+        fig.add_annotation(x=0.02, y=0.02, xref="paper", yref="paper", text="🧊 深度冻结 (便宜+弱势)", showarrow=False, font=dict(color="#8888FF", size=14), yanchor="bottom")
+        fig.add_annotation(x=0.98, y=0.02, xref="paper", yref="paper", text="⚠️ 顶部派发 (贵+弱势)", showarrow=False, font=dict(color="#FFA500", size=14), xanchor="right", yanchor="bottom")
 
-        # 播放/倒放按钮控制 (完全复刻宏观雷达)
+        # 动画播放控件配置
         settings_play = dict(frame=dict(duration=400, redraw=True), fromcurrent=True, transition=dict(duration=100))
         settings_rewind = dict(frame=dict(duration=100, redraw=True), fromcurrent=True, transition=dict(duration=0))
 
@@ -177,24 +193,24 @@ if not df_anim.empty:
             ]
         )]
 
+        # 进度条样式优化
         fig.layout.sliders[0].active = len(all_dates) - 1
-        fig.layout.sliders[0].currentvalue.prefix = "" 
-        fig.layout.sliders[0].currentvalue.font.size = 20
+        fig.layout.sliders[0].currentvalue.prefix = "当前日期: " 
+        fig.layout.sliders[0].currentvalue.font.size = 16
         fig.layout.sliders[0].pad = {"t": 50} 
-        
-        fig.update_layout(height=750, margin=dict(l=40, r=40, t=40, b=100))
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # 最新一期的数据表
-        st.markdown("### 📊 最新一期数据快照")
+        # 最新一期数据表 (同样采用热力图配色)
+        st.markdown("### 📋 最新截面数据")
         latest_date = filtered_df['Date'].max()
-        df_latest = filtered_df[filtered_df['Date'] == latest_date]
+        df_latest = filtered_df[filtered_df['Date'] == latest_date].copy()
         
+        # 数据表也用动量上色，保持一致性
         st.dataframe(
             df_latest[["Ticker", "Category", "Price", "Z-Score", "Momentum"]]
             .sort_values("Momentum", ascending=False)
-            .style.background_gradient(subset=["Z-Score"], cmap="RdYlGn_r")
+            .style.background_gradient(subset=["Momentum"], cmap="RdYlGn", vmin=mom_min, vmax=mom_max)
             .format({"Price": "{:.2f}", "Z-Score": "{:.2f}", "Momentum": "{:+.2f}%"}),
             use_container_width=True
         )
