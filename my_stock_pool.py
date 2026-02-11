@@ -22,7 +22,7 @@ PORTFOLIO_CONFIG = {
 }
 
 # ---------------------------------------------------------
-# 2. 核心计算逻辑 (增强容错版)
+# 2. 核心计算逻辑 (彻底修复 Crypto 与 股票 混合的时差空值Bug)
 # ---------------------------------------------------------
 def get_unique_tickers(config):
     all_tickers = []
@@ -54,25 +54,22 @@ def get_radar_data():
     rows = []
     for ticker in tickers:
         try:
-            # 兼容处理：如果只有一个标的，data层级会少一层
             df = data[ticker] if len(tickers) > 1 else data
-            
-            # 数据完整性检查
-            if df.empty or len(df) < 20:
-                continue
             
             # 必须包含 Close 列
             if 'Close' not in df.columns:
+                continue
+                
+            # 【关键修复】剔除含有 NaN 的行（解决周末美股没数据但 Crypto 有数据导致的错位）
+            df = df.dropna(subset=['Close'])
+
+            if df.empty or len(df) < 20:
                 continue
 
             # --- 指标计算 ---
             
             # 1. 相对估值
             current_price = df['Close'].iloc[-1]
-            # 容错：如果最后价格是 NaN
-            if pd.isna(current_price):
-                continue
-
             low_52w = df['Low'].min()
             high_52w = df['High'].max()
             
@@ -89,13 +86,11 @@ def get_radar_data():
                 flow_score = (current_price - price_5d_ago) / price_5d_ago * 100
             
             # 3. 波动率 (用于气泡大小)
-            # 填充 NaN 为 0，避免计算报错
             pct_change = df['Close'].pct_change().fillna(0)
             volatility = pct_change.std() * 100
             
-            # 关键修复：Plotly size 必须 > 0，且不能为 NaN
             if pd.isna(volatility) or volatility <= 0:
-                volatility = 1.0 # 给一个默认大小
+                volatility = 1.0 
             
             rows.append({
                 "Ticker": ticker,
@@ -129,10 +124,8 @@ with st.spinner("正在计算 52周相对估值 与 资金流向..."):
     df = get_radar_data()
 
 if not df.empty:
-    # 再次清洗：确保绘图所需的列没有 NaN
     df = df.dropna(subset=["Valuation(0-1)", "MoneyFlow(%)", "Volatility"])
     
-    # 筛选分类
     mask = df['Category'].apply(lambda x: any(c in x for c in show_categories))
     filtered_df = df[mask].copy()
     
@@ -153,13 +146,11 @@ if not df.empty:
         # --- 核心雷达图 ---
         st.markdown("### 🧭 估值-资金象限图")
         
-        # 定义颜色映射（移除不完全的映射，让 Plotly 自动分配未定义的组合）
-        # 这样即使出现 "A, C" 这种组合也不会报错
+        # 定义颜色映射，避免跨界标签报错
         color_map = {
-            "A": "#2ca02c", # 绿
-            "B": "#1f77b4", # 蓝
-            "C": "#d62728", # 红
-            "A, B": "#17becf" # 青
+            "A": "#2ca02c", 
+            "B": "#1f77b4", 
+            "C": "#d62728"
         }
 
         fig = px.scatter(
@@ -170,7 +161,6 @@ if not df.empty:
             text="Ticker",
             size="Volatility", 
             hover_data=["Price"],
-            # 只有当分类在字典里时才强制颜色，否则自动
             color_discrete_map=color_map, 
             height=600,
             title="左: 便宜(地板价) | 右: 昂贵(天花板) <---> 下: 资金流出 | 上: 资金流入"
@@ -180,11 +170,9 @@ if not df.empty:
         fig.add_vline(x=0.5, line_dash="dash", line_color="gray")
         fig.add_hline(y=0, line_dash="dash", line_color="gray")
         
-        # 区域标注
+        # 动态区域标注
         y_max = filtered_df['MoneyFlow(%)'].max()
         y_min = filtered_df['MoneyFlow(%)'].min()
-        # 增加一些缓冲空间防止文字重叠
-        y_range = y_max - y_min
         
         fig.add_annotation(x=0.05, y=y_max, text="💎 黄金坑", showarrow=False, font=dict(color="green"))
         fig.add_annotation(x=0.95, y=y_max, text="🔥 顶部狂热", showarrow=False, font=dict(color="red"))
@@ -195,12 +183,12 @@ if not df.empty:
         fig.update_layout(
             xaxis_title="相对估值 (0=年内最低, 1=年内最高)", 
             yaxis_title="5日资金流向 (涨跌幅 %)",
-            xaxis=dict(range=[-0.1, 1.1]) # 稍微扩大范围防止气泡被切
+            xaxis=dict(range=[-0.1, 1.1]) 
         )
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # 数据表
+        # 数据表 (带有你安装好的 matplotlib 渐变色)
         with st.expander("查看详细数据表"):
             st.dataframe(
                 filtered_df.sort_values("MoneyFlow(%)", ascending=False)
