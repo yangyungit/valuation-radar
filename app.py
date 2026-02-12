@@ -31,7 +31,7 @@ SINGLE_ASSETS = {
     "军工": "ITA",
     "农业": "DBA",
     
-    # 资产 (这里已移除以太坊，新增人民币汇率)
+    # 资产 (已移除以太坊，新增人民币，移除Emoji)
     "比特币": "BTC-USD",
     "黄金": "GLD",
     "白银": "SLV",
@@ -46,9 +46,10 @@ SINGLE_ASSETS = {
 
 # 合成组合 (Basket): 后台下载成分股 -> 合成等权指数
 CUSTOM_BASKETS = {
-    "🚀 科技七姐妹": ["NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA"],
-    "🛡️ 必选消费精英": ["WMT", "COST", "KO", "PG", "PEP"], # 沃尔玛, 好市多, 可乐, 宝洁, 百事
-    "📉 垃圾债": ["HYG", "JNK"] # 用两个ETF合成更稳
+    # 移除Emoji，改名"精英"为"龙头"
+    "科技七姐妹": ["NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA"],
+    "必选消费龙头": ["WMT", "COST", "KO", "PG", "PEP"], 
+    "垃圾债": ["HYG", "JNK"] 
 }
 
 # --- 3. 核心引擎 (支持合成指数) ---
