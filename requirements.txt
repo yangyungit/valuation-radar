@@ -4,3 +4,4 @@ pandas
 plotly
 matplotlib
 pandas_datareader
+setuptools
