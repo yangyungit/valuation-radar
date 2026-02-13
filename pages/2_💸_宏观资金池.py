@@ -11,11 +11,12 @@ st.set_page_config(page_title="全球流动性时光机", layout="wide")
 st.title("💸 全球流动性时光机 (Liquidity Time Machine)")
 st.caption("全维度监控：**【市值】**看规模，**【流水线】**看结构，**【趋势】**看因果。")
 
-# --- 1. 统一数据引擎 ---
+# --- 1. 统一数据引擎 (升级：拉取10年数据) ---
 @st.cache_data(ttl=3600*4)
 def get_all_data():
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=1000) # 拉长到3年，看趋势更清楚
+    # 关键修改：拉取 3650 天 (10年) 数据，以支持长周期回测
+    start_date = end_date - timedelta(days=3650) 
     
     # A. 宏观数据
     try:
@@ -66,14 +67,14 @@ df = get_all_data()
 
 if not df.empty and 'Net_Liquidity' in df.columns:
     
-    tab_treemap, tab_waterfall, tab_corr = st.tabs(["🏰 市值时光机", "🏭 货币流水线", "📈 趋势叠加 (找规律)"])
+    tab_treemap, tab_waterfall, tab_corr = st.tabs(["🏰 市值时光机", "🏭 货币流水线", "📈 趋势叠加 (十年回测)"])
     
     # ==========================================
     # PROJECT 1: 市值时光机 (Treemap)
     # ==========================================
     with tab_treemap:
-        st.markdown("##### 📅 资产池存量变化 (M0-M1-M2)")
-        # 复用 V5 逻辑
+        st.markdown("##### 📅 资产池存量变化")
+        # 复用之前的逻辑
         ids = ["root", "cat_source", "cat_valve", "cat_asset", "m0", "fed", "m2", "m1", "m2_other", "tga", "rrp", "spy", "tlt", "gld", "btc", "uso"]
         parents = ["", "root", "root", "root", "cat_source", "cat_source", "cat_source", "m2", "m2", "cat_valve", "cat_valve", "cat_asset", "cat_asset", "cat_asset", "cat_asset", "cat_asset"]
         labels = ["全球资金池", "Source", "Valve", "Asset", "🌱 M0", "🖨️ Fed", "💰 M2", "💧 M1", "🏦 定存", "👜 TGA", "♻️ RRP", "🇺🇸 SPY", "📜 TLT", "🥇 GLD", "₿ BTC", "🛢️ USO"]
@@ -130,7 +131,7 @@ if not df.empty and 'Net_Liquidity' in df.columns:
     # ==========================================
     with tab_waterfall:
         st.markdown("##### 🏭 资金加工流水线：从央行到市场")
-        # 复用 V6 严谨分层版 Sankey 逻辑
+        # 复用 V6 Sankey 逻辑
         available_dates = df_weekly.index.strftime('%Y-%m-%d').tolist()
         sankey_date_str = st.select_slider("选择时间点：", options=available_dates, value=available_dates[-1], key="layer_slider")
         curr_date = pd.to_datetime(sankey_date_str)
@@ -163,45 +164,39 @@ if not df.empty and 'Net_Liquidity' in df.columns:
         st.plotly_chart(fig_sankey, use_container_width=True)
 
     # ==========================================
-    # PROJECT 3: 趋势相关性 (Trend Overlay) - NEW!
+    # PROJECT 3: 趋势相关性 (Trend Overlay)
     # ==========================================
     with tab_corr:
-        st.markdown("##### 📈 寻找“鳄鱼嘴”：资金与资产的共舞")
+        st.markdown("##### 📈 寻找“鳄鱼嘴”：资金与资产的背离")
         
-        # 3.1 控件
         col_ctrl1, col_ctrl2 = st.columns([1, 3])
         with col_ctrl1:
-            lookback_days = st.selectbox("📅 观测周期", [180, 365, 730, 1000], index=1, format_func=lambda x: f"过去 {x} 天")
+            # 增加 3650天 (10年) 选项
+            lookback_days = st.selectbox(
+                "📅 观测周期", 
+                [365, 730, 1095, 1825, 3650], 
+                index=3, 
+                format_func=lambda x: f"过去 {x/365:.0f} 年" if x >= 365 else f"过去 {x} 天"
+            )
             chart_mode = st.radio("👀 观测模式", ["双轴叠加 (看背离)", "归一化跑分 (看强弱)"], index=0)
         
-        # 3.2 数据切片
         df_chart = df.iloc[-lookback_days:].copy()
         
-        # 3.3 绘图
         fig_trend = make_subplots(specs=[[{"secondary_y": True}]])
         
-        # A. 净流动性 (永远作为基准)
-        # 用填充面积图表示“水位”
         if chart_mode == "双轴叠加 (看背离)":
             fig_trend.add_trace(
                 go.Scatter(x=df_chart.index, y=df_chart['Net_Liquidity'], name="💧 净流动性 (左轴)", 
                            fill='tozeroy', line=dict(color='rgba(46, 204, 113, 0.5)', width=0), hovertemplate="$%{y:.2f}B"),
                 secondary_y=False
             )
-            # TGA 和 RRP 辅助线 (虚线)
-            fig_trend.add_trace(go.Scatter(x=df_chart.index, y=df_chart['TGA'], name="👜 TGA (反向指标)", line=dict(color='purple', width=1, dash='dot'), visible='legendonly'), secondary_y=False)
-            fig_trend.add_trace(go.Scatter(x=df_chart.index, y=df_chart['RRP'], name="💤 RRP (反向指标)", line=dict(color='blue', width=1, dash='dot'), visible='legendonly'), secondary_y=False)
-            
-            # 资产价格 (右轴)
             fig_trend.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SPY'], name="🇺🇸 美股 SPY (右轴)", line=dict(color='#E74C3C', width=2)), secondary_y=True)
             fig_trend.add_trace(go.Scatter(x=df_chart.index, y=df_chart['BTC-USD'], name="₿ 比特币 (右轴)", line=dict(color='#F39C12', width=2)), secondary_y=True)
             
-            # 设置坐标轴标题
             fig_trend.update_yaxes(title_text="净流动性 (Billions)", secondary_y=False, showgrid=False)
             fig_trend.update_yaxes(title_text="资产价格 ($)", secondary_y=True, showgrid=True)
             
         else:
-            # 归一化模式：全部重置为0
             def normalize(series): return (series / series.iloc[0] - 1) * 100
             
             fig_trend.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['Net_Liquidity']), name="💧 净流动性 %", line=dict(color='#2ECC71', width=3)))
@@ -221,11 +216,15 @@ if not df.empty and 'Net_Liquidity' in df.columns:
         st.plotly_chart(fig_trend, use_container_width=True)
         
         with col_ctrl2:
-            st.info("""
-            **💡 交易员笔记：如何看这张图？**
-            * **找共振：** 当绿色阴影(流动性)上升，且红线(美股)也上升时，这是最健康的上涨。
-            * **找背离 (鳄鱼嘴)：** 如果绿色阴影开始**下降**（比如 TGA 抽血），但红线还在**创新高**，这就形成了“鳄鱼嘴”。通常意味着市场在靠情绪（或杠杆）硬撑，随后往往会有补跌风险。
+            st.warning(f"""
+            **🧪 历史回测分析 ({lookback_days}天):**
+            
+            1. **2020-2021 (高度相关):** 你会看到绿色的【净流动性】和红色的【美股】几乎同步上涨。这就是“放水牛”。
+            2. **2022 (同步下跌):** 随着 TGA 抽水和美联储缩表，两者双双跳水。
+            3. **2023-至今 (鳄鱼嘴背离):** * 绿色区域（流动性）在横盘甚至下降。
+               * 红色曲线（股市）却在 AI 狂潮下创出新高。
+               * **结论：** 当前的上涨**不是**由央行基础流动性推动的，而是由 **财政赤字** + **企业盈利** + **情绪估值** 共同推升的。这往往意味着波动率会加大。
             """)
 
 else:
-    st.info("⏳ 全球数据加载中...")
+    st.info("⏳ 正在拉取十年宏观数据，请稍候...")
