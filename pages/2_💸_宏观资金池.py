@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="全球流动性时光机", layout="wide")
 
 st.title("💸 全球流动性时光机 (Liquidity Time Machine)")
-st.caption("当前模式：**纯净版 (真实市值)** | 拖动下方滑块回看历史资金流向")
+st.caption("控制模式：**手动回溯** | 拖动滑块查看任意历史时刻的资金分布")
 
-# --- 1. 数据引擎 (Tank Engine) ---
+# --- 1. 数据引擎 (保持不变，因为它是好的) ---
 @st.cache_data(ttl=3600*4)
 def get_all_data():
     end_date = datetime.now()
@@ -59,23 +59,50 @@ def get_all_data():
             
     return df_all
 
-# --- 2. 极简动画帧生成器 ---
-@st.cache_data(ttl=3600)
-def generate_simple_frames(df):
-    if df.empty: return pd.DataFrame()
+# --- 2. 页面逻辑 ---
+df = get_all_data()
 
-    # 按周取样
-    df_weekly = df.resample('W-FRI').last().iloc[-52:]
-
-    frames = []
+if not df.empty and 'Net_Liquidity' in df.columns:
     
-    # 固定的市值基准 (Billions)
+    # === A. 准备时间轴数据 ===
+    # 按周五取样，生成可选的日期列表
+    df_weekly = df.resample('W-FRI').last().iloc[-52:] # 最近52周
+    available_dates = df_weekly.index.strftime('%Y-%m-%d').tolist()
+    
+    # 如果数据不够，就取全部
+    if not available_dates:
+        available_dates = [df.index[-1].strftime('%Y-%m-%d')]
+
+    # === B. 核心交互：Streamlit 原生滑块 ===
+    # 这就是"机械控制"的核心，绝不会崩
+    st.markdown("### 📅 历史回放控制台")
+    selected_date_str = st.select_slider(
+        "拖动滑块选择时间：",
+        options=available_dates,
+        value=available_dates[-1] # 默认选最新
+    )
+    
+    # === C. 计算选中那一周的数据 ===
+    curr_date = pd.to_datetime(selected_date_str)
+    
+    # 找前值 (30天前)
+    prev_date = curr_date - timedelta(days=30)
+    try:
+        prev_idx = df.index.get_indexer([prev_date], method='nearest')[0]
+        val_prev_row = df.iloc[prev_idx]
+    except:
+        val_prev_row = df.iloc[0]
+
+    row_data = df.loc[curr_date] if curr_date in df.index else df.iloc[-1]
+    
+    # 构建绘图数据 List
+    plot_data = []
+    
     BASE_CAPS = {
         "M2": 22300, "SPY": 55000, "TLT": 52000, 
         "GLD": 14000, "BTC-USD": 2500, "USO": 2000
     }
 
-    # 定义全量对象
     items = [
         ("💰 M2 货币", "M2", "Source", "Macro"),
         ("🖨️ 美联储", "Fed_Assets", "Source", "Macro"),
@@ -88,90 +115,69 @@ def generate_simple_frames(df):
         ("₿ 比特币", "BTC-USD", "Asset", "Asset")
     ]
 
-    for date in df_weekly.index:
-        date_str = date.strftime('%Y-%m-%d')
-        
-        # 找前值
-        prev_date = date - timedelta(days=30)
-        try:
-            prev_idx = df.index.get_indexer([prev_date], method='nearest')[0]
-            val_prev_row = df.iloc[prev_idx]
-        except:
-            val_prev_row = df_weekly.loc[date]
-
-        row_data = df_weekly.loc[date]
-
-        for name, col, cat, asset_type in items:
-            # 默认安全值
-            val_curr = 0.0
+    for name, col, cat, asset_type in items:
+        if col in df.columns:
+            val_curr = float(row_data[col]) if not pd.isna(row_data[col]) else 0.0
+            val_prev = float(val_prev_row[col]) if not pd.isna(val_prev_row[col]) else 0.0
+            
+            # 涨跌幅
             pct = 0.0
-            size = 1.0 # 默认给1，防止0报错
+            if val_prev != 0:
+                pct = (val_curr - val_prev) / val_prev * 100
+            
+            # 市值大小
+            if asset_type == 'Macro':
+                size = abs(val_curr)
+            else:
+                size = float(BASE_CAPS.get(col, 100))
+            
+            # 文本
+            display_val = f"${val_curr:,.0f}B"
+            if val_curr > 1000: display_val = f"${val_curr/1000:.1f}T"
+            if asset_type == 'Asset': display_val = f"~${size/1000:.1f}T"
 
-            if col in df.columns:
-                val_curr = float(row_data[col]) if not pd.isna(row_data[col]) else 0.0
-                val_prev = float(val_prev_row[col]) if not pd.isna(val_prev_row[col]) else 0.0
-                
-                # 计算30天涨跌
-                if val_prev != 0:
-                    pct = (val_curr - val_prev) / val_prev * 100
-                
-                # 计算大小 (Market Cap)
-                if asset_type == 'Macro':
-                    size = abs(val_curr)
-                else:
-                    size = float(BASE_CAPS.get(col, 100))
-
-            # 严格确保 Size 不为 0
-            size = max(size, 0.1)
-
-            frames.append({
-                "Date": date_str,
-                "Root": "全球资金池", # 根节点
-                "Name": name,
+            plot_data.append({
+                "Root": "全球资金池",
                 "Category": cat,
-                "Size": size,
+                "Name": name,
+                "Size": max(size, 0.1), # 防止0
                 "Color": pct,
-                "Display_Val": f"{val_curr:,.0f}"
+                "Display": display_val
             })
             
-    return pd.DataFrame(frames)
-
-# --- 3. 页面渲染 ---
-df = get_all_data()
-
-if not df.empty and 'Net_Liquidity' in df.columns:
-    
-    df_anim = generate_simple_frames(df)
-    
-    if not df_anim.empty:
-        # 绘制图表
+    # === D. 绘制静态图 ===
+    if plot_data:
+        df_plot = pd.DataFrame(plot_data)
+        
         fig = px.treemap(
-            df_anim,
-            path=['Root', 'Category', 'Name'], 
+            df_plot,
+            path=['Root', 'Category', 'Name'],
             values='Size',
             color='Color',
-            # 这里的 range_color 必须是固定的数字，不能有 None
             range_color=[-5, 5],
             color_continuous_scale=['#FF4B4B', '#262730', '#09AB3B'],
-            hover_data=['Display_Val', 'Color'],
-            animation_frame="Date" 
+            hover_data=['Display', 'Color']
         )
         
         fig.update_traces(
-            texttemplate="<b>%{label}</b><br>%{color:.2f}%",
-            textfont=dict(size=15)
+            texttemplate="<b>%{label}</b><br>%{customdata[0]}<br>%{color:.2f}%",
+            textfont=dict(size=16)
         )
         
         fig.update_layout(
-            height=700,
-            margin=dict(t=20, l=10, r=10, b=10),
-            sliders=[dict(currentvalue={"prefix": "📅 历史回放: "}, pad={"t": 50})]
+            height=600,
+            margin=dict(t=10, l=10, r=10, b=10),
+            title=f"📅 当前展示时间: {selected_date_str}"
         )
         
         st.plotly_chart(fig, use_container_width=True)
-        st.success("🎥 时光机已启动。请点击下方 ▶️ 播放键或拖动滑块。")
         
+        # 增加一点文字解读
+        if 'TGA' in row_data:
+            tga_val = row_data['TGA']
+            st.info(f"📊 **数据快照 ({selected_date_str}):** 此时财政部 TGA 余额为 **${tga_val:.0f}B**。")
     else:
-        st.warning("数据处理中...")
+        st.error("该日期暂无数据")
+
 else:
-    st.info("⏳ 正在拉取最新数据...")
+    st.info("⏳ 正在初始化数据引擎...")
