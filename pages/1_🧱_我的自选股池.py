@@ -10,10 +10,11 @@ st.set_page_config(page_title="核心资产雷达 (动量热力版)", layout="wi
 PORTFOLIO_CONFIG = {
     "A (防守)": ["GLD", "WMT", "TJX", "RSG", "LLY", "COST", "KO", "V", "BRK-B", "ISRG", "LMT", "WM", "JNJ", "LIN"],
     "B (核心)": ["COST", "GOOGL", "MSFT", "AMZN", "PWR", "CACI", "AAPL", "MNST", "LLY", "XOM", "CVX", "WM"],
-    "C (时代之王)": ["TSLA", "VRT", "NVDA", "PLTR", "NOC", "XAR", "XLP", "MS", "GS", "LMT", "ANET", "ETN", "BTC-USD", "GOLD"]
+    # 【修改点1】加入了 ETH-USD
+    "C (时代之王)": ["TSLA", "VRT", "NVDA", "PLTR", "NOC", "XAR", "XLP", "MS", "GS", "LMT", "ANET", "ETN", "BTC-USD", "ETH-USD", "GOLD"]
 }
 
-# --- 2. 核心计算引擎 (完全采用原版宏观雷达底层防错逻辑) ---
+# --- 2. 核心计算引擎 ---
 def get_unique_tickers():
     all_tickers = []
     for tickers in PORTFOLIO_CONFIG.values():
@@ -35,7 +36,7 @@ def get_market_data():
 
     tickers = get_unique_tickers()
     try:
-        # 关键修复1：加入 auto_adjust=True (前复权)，摒弃 group_by，防止分红除息导致的动量断层
+        # 保持 auto_adjust=True 以防止分红导致的数据断层
         data = yf.download(tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)
         raw_close = data['Close']
     except Exception as e:
@@ -56,6 +57,9 @@ def get_market_data():
             display_dates = price_weekly[price_weekly.index >= target_start_date].index
 
             cat_label = get_category_label(ticker)
+            
+            # 【修改点2】创建显示名称，去掉 "-USD" 后缀
+            display_name = ticker.replace("-USD", "")
 
             for date in display_dates:
                 window_price = series_price.loc[:date].tail(rolling_window)
@@ -79,7 +83,8 @@ def get_market_data():
 
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'),
-                    "Ticker": ticker,
+                    "Ticker": ticker,        # 原始代码用于逻辑ID
+                    "DisplayTicker": display_name, # 显示名称 (无USD)
                     "Category": cat_label,
                     "Z-Score": round(float(z_score), 2),
                     "Momentum": round(float(momentum), 2),
@@ -90,11 +95,11 @@ def get_market_data():
 
     full_df = pd.DataFrame(processed_dfs)
     if not full_df.empty:
-        # 关键修复2：极其严格的双重排序！强制 Plotly 每一帧的数据索引死死咬住，杜绝气泡“张冠李戴”
+        # 严格排序防止动画乱序
         full_df = full_df.sort_values(by=["Date", "Ticker"])
     return full_df
 
-# --- 3. 页面渲染 (完全复刻原版 UI) ---
+# --- 3. 页面渲染 ---
 st.title("🎯 核心资产雷达 (动量热力版)")
 
 st.sidebar.header("⚙️ 筛选工具")
@@ -120,7 +125,10 @@ if not df_anim.empty:
             filtered_df, 
             x="Z-Score", y="Momentum", 
             animation_frame="Date", animation_group="Ticker", 
-            text="Ticker", hover_name="Category",
+            
+            # 【修改点3】这里改用处理过的 DisplayTicker 来显示文字
+            text="DisplayTicker", 
+            hover_name="Category",
             hover_data=["Price"], 
             color="Momentum", 
             range_x=range_x, range_y=range_y, 
@@ -172,10 +180,12 @@ if not df_anim.empty:
         latest_date = filtered_df['Date'].iloc[-1]
         df_latest = filtered_df[filtered_df['Date'] == latest_date]
         
-        display_cols = ['Ticker', 'Category', 'Z-Score', 'Momentum', 'Price']
+        # 表格里也显示干净的名字
+        display_cols = ['DisplayTicker', 'Category', 'Z-Score', 'Momentum', 'Price']
         
         st.dataframe(
             df_latest[display_cols]
+            .rename(columns={"DisplayTicker": "Ticker"}) # 表头还是叫 Ticker 比较自然
             .sort_values(by="Z-Score", ascending=False)
             .style
             .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40),
