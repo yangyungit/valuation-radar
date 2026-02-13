@@ -6,12 +6,24 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="核心资产雷达 (动量热力版)", layout="wide")
 
-# --- 1. 您的专属标的池 ---
+# --- 1. 您的专属标的池 (新增 D 类) ---
 PORTFOLIO_CONFIG = {
     "A (防守)": ["GLD", "WMT", "TJX", "RSG", "LLY", "COST", "KO", "V", "BRK-B", "ISRG", "LMT", "WM", "JNJ", "LIN"],
     "B (核心)": ["COST", "GOOGL", "MSFT", "AMZN", "PWR", "CACI", "AAPL", "MNST", "LLY", "XOM", "CVX", "WM"],
-    # 【修改点1】加入了 ETH-USD
-    "C (时代之王)": ["TSLA", "VRT", "NVDA", "PLTR", "NOC", "XAR", "XLP", "MS", "GS", "LMT", "ANET", "ETN", "BTC-USD", "ETH-USD", "GOLD"]
+    "C (时代之王)": ["TSLA", "VRT", "NVDA", "PLTR", "NOC", "XAR", "XLP", "MS", "GS", "LMT", "ANET", "ETN", "BTC-USD", "ETH-USD", "GOLD"],
+    # 【新增】D 类：周期/潜力/观察
+    "D (观察)": [
+        # 贵金属/矿业
+        "FCX", "AG", "HL", "BHP", "VALE", "RIO", 
+        # AI/科技
+        "MU", "SPIR", "APPS", "WDC", "SNDK", "NET", 
+        # 军工/太空 (已剔除 LMT, PLTR 以保留在 C 类)
+        "ITA", "KTOS", "BKR", "BAH", 
+        # 能源/铀矿 (已剔除 XOM, CVX 以保留在 B 类)
+        "TDW", "TRGP", "UEC", "CCJ", "URA", 
+        # 消费/医药/其他
+        "BTI", "MO", "FIGS"
+    ]
 }
 
 # --- 2. 核心计算引擎 ---
@@ -22,9 +34,22 @@ def get_unique_tickers():
     return list(set(all_tickers))
 
 def get_category_label(ticker):
-    for section, tickers in reversed(PORTFOLIO_CONFIG.items()):
-        if ticker in tickers:
-            return section.split(" ")[0] 
+    # 优先级逻辑：C > B > A > D
+    # 我们希望保留 C/B/A 的地位，所以遍历顺序设为 A, B, C, D 的反向？
+    # 不，我们希望如果 LMT 在 A, C, D 都有，它应该显示为 C。
+    # 所以我们应该按 D, A, B, C 的顺序检查？或者直接硬编码优先级。
+    # 这里的逻辑是：reversed() 会先取最后面的。
+    # 现在的顺序是 A, B, C, D。reversed 就是 D, C, B, A。
+    # 这样会导致 LMT (在A, C, D) 被标记为 D。这不对。
+    # 修正：我们强制把 D 放在最前面检查，如果存在则暂存，如果后续有 C/B/A 则覆盖。
+    # 或者简单点：我们手动定义优先级列表。
+    
+    priority_order = ["C (时代之王)", "B (核心)", "A (防守)", "D (观察)"]
+    
+    for section in priority_order:
+        if ticker in PORTFOLIO_CONFIG[section]:
+            return section.split(" ")[0]
+            
     return "Other"
 
 @st.cache_data(ttl=3600*6)
@@ -36,7 +61,6 @@ def get_market_data():
 
     tickers = get_unique_tickers()
     try:
-        # 保持 auto_adjust=True 以防止分红导致的数据断层
         data = yf.download(tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)
         raw_close = data['Close']
     except Exception as e:
@@ -58,7 +82,7 @@ def get_market_data():
 
             cat_label = get_category_label(ticker)
             
-            # 【修改点2】创建显示名称，去掉 "-USD" 后缀
+            # 去掉 -USD 后缀
             display_name = ticker.replace("-USD", "")
 
             for date in display_dates:
@@ -83,8 +107,8 @@ def get_market_data():
 
                 processed_dfs.append({
                     "Date": date.strftime('%Y-%m-%d'),
-                    "Ticker": ticker,        # 原始代码用于逻辑ID
-                    "DisplayTicker": display_name, # 显示名称 (无USD)
+                    "Ticker": ticker,
+                    "DisplayTicker": display_name,
                     "Category": cat_label,
                     "Z-Score": round(float(z_score), 2),
                     "Momentum": round(float(momentum), 2),
@@ -95,7 +119,6 @@ def get_market_data():
 
     full_df = pd.DataFrame(processed_dfs)
     if not full_df.empty:
-        # 严格排序防止动画乱序
         full_df = full_df.sort_values(by=["Date", "Ticker"])
     return full_df
 
@@ -103,11 +126,13 @@ def get_market_data():
 st.title("🎯 核心资产雷达 (动量热力版)")
 
 st.sidebar.header("⚙️ 筛选工具")
+# 默认全选 A, B, C, D
+all_cats = ["A", "B", "C", "D"]
 selected_cats = st.sidebar.multiselect(
-    "过滤分类 (A/B/C)", ["A", "B", "C"], default=["A", "B", "C"]
+    "过滤分类 (A/B/C/D)", all_cats, default=all_cats
 )
 
-with st.spinner("正在加载深色模式与长周期数据..."):
+with st.spinner("正在加载全市场数据 (A+B+C+D)..."):
     df_anim = get_market_data()
 
 if not df_anim.empty:
@@ -126,7 +151,6 @@ if not df_anim.empty:
             x="Z-Score", y="Momentum", 
             animation_frame="Date", animation_group="Ticker", 
             
-            # 【修改点3】这里改用处理过的 DisplayTicker 来显示文字
             text="DisplayTicker", 
             hover_name="Category",
             hover_data=["Price"], 
@@ -180,12 +204,11 @@ if not df_anim.empty:
         latest_date = filtered_df['Date'].iloc[-1]
         df_latest = filtered_df[filtered_df['Date'] == latest_date]
         
-        # 表格里也显示干净的名字
         display_cols = ['DisplayTicker', 'Category', 'Z-Score', 'Momentum', 'Price']
         
         st.dataframe(
             df_latest[display_cols]
-            .rename(columns={"DisplayTicker": "Ticker"}) # 表头还是叫 Ticker 比较自然
+            .rename(columns={"DisplayTicker": "Ticker"}) 
             .sort_values(by="Z-Score", ascending=False)
             .style
             .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40),
