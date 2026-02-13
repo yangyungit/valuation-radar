@@ -9,18 +9,18 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="全球流动性时光机", layout="wide")
 
 st.title("💸 全球流动性时光机 (Liquidity Time Machine)")
-st.caption("全维度监控：**【市值】**看规模，**【流水线】**看结构，**【趋势】**看因果。")
+st.caption("全景视角：**【财政+央行】双引擎监控**。现在你可以清晰看到，是谁在偷偷放水。")
 
-# --- 1. 统一数据引擎 (升级：拉取10年数据) ---
+# --- 1. 统一数据引擎 ---
 @st.cache_data(ttl=3600*4)
 def get_all_data():
     end_date = datetime.now()
-    # 关键修改：拉取 3650 天 (10年) 数据，以支持长周期回测
     start_date = end_date - timedelta(days=3650) 
     
     # A. 宏观数据
     try:
-        macro_codes = ['WALCL', 'WTREGEN', 'RRPONTSYD', 'BOGMBASE', 'M1SL', 'M2SL', 'CURRCIR']
+        # 新增 GFDEBTN (联邦政府总债务) -> 用于计算财政赤字注入
+        macro_codes = ['WALCL', 'WTREGEN', 'RRPONTSYD', 'BOGMBASE', 'M1SL', 'M2SL', 'CURRCIR', 'GFDEBTN']
         df_macro = web.DataReader(macro_codes, 'fred', start_date, end_date)
         df_macro = df_macro.resample('D').ffill()
     except:
@@ -55,7 +55,15 @@ def get_all_data():
         if 'BOGMBASE' in df_all.columns: df_all['M0'] = df_all['BOGMBASE'] / 1000
         if 'CURRCIR' in df_all.columns: df_all['Currency'] = df_all['CURRCIR'] / 1000
         
-        # 核心指标：净流动性
+        # === 核心逻辑：计算财政注入 (Fiscal Injection) ===
+        # 逻辑：财政部每增加 $1 国债，如果不趴在 TGA 里，就是流向了市场。
+        # 我们用过去 12 个月的债务增量，代表“年化财政赤字注入规模”
+        if 'GFDEBTN' in df_all.columns:
+            df_all['Total_Debt'] = df_all['GFDEBTN'] / 1000 # 换算成 Trillion
+            # 计算同比增量 (YoY Change)作为当前的注入速度
+            df_all['Fiscal_Injection'] = df_all['Total_Debt'].diff(365)
+            df_all['Fiscal_Injection'] = df_all['Fiscal_Injection'].fillna(method='bfill')
+
         cols = ['Fed_Assets', 'TGA', 'RRP']
         if all(col in df_all.columns for col in cols):
             df_all['Net_Liquidity'] = df_all['Fed_Assets'] - df_all['TGA'] - df_all['RRP']
@@ -67,7 +75,7 @@ df = get_all_data()
 
 if not df.empty and 'Net_Liquidity' in df.columns:
     
-    tab_treemap, tab_waterfall, tab_corr = st.tabs(["🏰 市值时光机", "🏭 货币流水线", "📈 趋势叠加 (十年回测)"])
+    tab_treemap, tab_waterfall, tab_corr = st.tabs(["🏰 市值时光机", "🏭 货币流水线 (含财政)", "📈 趋势叠加"])
     
     # ==========================================
     # PROJECT 1: 市值时光机 (Treemap)
@@ -127,41 +135,113 @@ if not df.empty and 'Net_Liquidity' in df.columns:
             st.plotly_chart(fig_tree, use_container_width=True)
 
     # ==========================================
-    # PROJECT 2: 货币流水线 (Sankey)
+    # PROJECT 2: 货币流水线 (Sankey with Fiscal)
     # ==========================================
     with tab_waterfall:
-        st.markdown("##### 🏭 资金加工流水线：从央行到市场")
-        # 复用 V6 Sankey 逻辑
+        st.markdown("##### 🏭 双引擎流水线：央行(Monetary) + 财政(Fiscal)")
+        st.caption("注意观察：**【财政赤字】** 是如何绕过央行，直接向经济体(M2)暴力注资的。这就是为什么加息也没把经济搞崩的原因。")
+        
         available_dates = df_weekly.index.strftime('%Y-%m-%d').tolist()
         sankey_date_str = st.select_slider("选择时间点：", options=available_dates, value=available_dates[-1], key="layer_slider")
         curr_date = pd.to_datetime(sankey_date_str)
         idx = df.index.get_indexer([curr_date], method='pad')[0]
         row = df.iloc[idx]
         
+        # --- 数据准备 ---
         fed_assets = float(row.get('Fed_Assets', 0))
         tga = float(row.get('TGA', 0))
         rrp = float(row.get('RRP', 0))
         m0 = float(row.get('M0', 0))
         currency = float(row.get('Currency', 0))
         reserves = m0 - currency
+        
         m1 = float(row.get('M1', 0))
-        demand_deposits = m1 - currency
         m2 = float(row.get('M2', 0))
-        savings_deposits = m2 - m1
+        
+        # 核心：财政赤字注入量 (年化)
+        fiscal_injection = float(row.get('Fiscal_Injection', 0))
+        if fiscal_injection < 0: fiscal_injection = 0 # 保护
+        
+        # 倒挤信贷创造
+        # M2 的来源 = 现金 + 财政注入 + 银行信贷创造
+        # 所以：信贷创造 = M2 - (现金 + 财政注入)
+        bank_credit_creation = m2 - currency - fiscal_injection
+        
+        # 资产端
         spy_price = float(row.get('SPY', 0))
         latest_spy = float(latest_row.get('SPY', 1))
         asset_pool_base = 100000 
         asset_pool_curr = asset_pool_base * (spy_price/latest_spy) if latest_spy else asset_pool_base
         valuation_leverage = asset_pool_curr - m2 * 0.5 
 
-        label_list = [f"🏛️ 1. 央行源头<br>${fed_assets/1000:.1f}T", f"🔒 损耗 (TGA/RRP)<br>${(tga+rrp)/1000:.1f}T", f"🌱 2. 基础货币 (M0)<br>${m0/1000:.1f}T", f"💵 现金<br>${currency/1000:.1f}T", f"🏦 准备金<br>${reserves/1000:.1f}T", f"⚡ 信贷创造 I<br>+${demand_deposits/1000:.1f}T", f"💧 3. 狭义货币 (M1)<br>${m1/1000:.1f}T", f"⚡ 信贷创造 II<br>+${savings_deposits/1000:.1f}T", f"🌊 4. 广义货币 (M2)<br>${m2/1000:.1f}T", f"📈 市场情绪溢价<br>+${valuation_leverage/1000:.1f}T", f"🏙️ 5. 资产终局<br>${asset_pool_curr/1000:.1f}T"]
-        node_x = [0.001, 0.2, 0.2, 0.35, 0.35, 0.35, 0.5, 0.65, 0.8, 0.8, 0.999]
-        node_y = [0.5, 0.9, 0.3, 0.1, 0.5, 0.8, 0.5, 0.8, 0.5, 0.1, 0.5] 
-        color_list = ["#F1C40F", "#8E44AD", "#2ECC71", "#1ABC9C", "#95A5A6", "#BDC3C7", "#3498DB", "#BDC3C7", "#2E86C1", "#BDC3C7", "#E74C3C"]
+        # --- 节点定义 ---
+        # 0: Fed
+        # 1: Fiscal (财政部) <--- NEW!
+        # 2: TGA/RRP (Leak)
+        # 3: M0
+        # 4: Currency
+        # 5: Reserves
+        # 6: Bank Credit (信贷)
+        # 7: M2
+        # 8: Valuation
+        # 9: Assets
         
-        fig_sankey = go.Figure(data=[go.Sankey(arrangement = "snap", node = dict(pad = 10, thickness = 20, line = dict(color = "black", width = 0.5), label = label_list, color = color_list, x = node_x, y = node_y), link = dict(source = [0, 0, 2, 2, 3, 5, 6, 7, 8, 8, 9], target = [1, 2, 3, 4, 6, 6, 8, 8, 10, 10, 10], value = [tga+rrp, m0, currency, reserves, currency, demand_deposits, m1, savings_deposits, m2*0.5, m2*0.5, valuation_leverage], color = ["#D7BDE2", "#ABEBC6", "#A2D9CE", "#D5DBDB", "#A2D9CE", "#D5DBDB", "#AED6F1", "#D5DBDB", "#AED6F1", "#D5DBDB", "#E6B0AA"]))])
-        fig_sankey.update_layout(height=600, font=dict(size=14))
+        label_list = [
+            f"🏛️ 央行 (Fed)<br>${fed_assets/1000:.1f}T",    # 0
+            f"🦅 财政部 (Fiscal)<br>赤字注入 ${fiscal_injection/1000:.1f}T/yr", # 1 (NEW)
+            f"🔒 损耗 (TGA/RRP)<br>${(tga+rrp)/1000:.1f}T", # 2
+            f"🌱 基础货币 (M0)<br>${m0/1000:.1f}T",       # 3
+            f"💵 现金<br>${currency/1000:.1f}T",             # 4
+            f"🏦 准备金<br>${reserves/1000:.1f}T",     # 5
+            f"⚡ 银行信贷创造<br>+${bank_credit_creation/1000:.1f}T",# 6
+            f"🌊 广义货币 (M2)<br>${m2/1000:.1f}T",       # 7
+            f"📈 市场情绪溢价<br>+${valuation_leverage/1000:.1f}T", # 8
+            f"🏙️ 资产终局<br>${asset_pool_curr/1000:.1f}T" # 9
+        ]
+        
+        # 坐标锁定 (5阶段)
+        # X: Source(0) -> M0(0.25) -> Components(0.4) -> M2(0.7) -> Assets(1.0)
+        node_x = [0.001, 0.4,   0.2, 0.2, 0.4, 0.4, 0.4, 0.7, 0.7, 0.999]
+        node_y = [0.5,   0.1,   0.9, 0.4, 0.3, 0.6, 0.9, 0.5, 0.1, 0.5] 
+        
+        color_list = [
+            "#F1C40F", # Fed 黄
+            "#E74C3C", # Fiscal 红 (NEW!)
+            "#8E44AD", # Leak 紫
+            "#2ECC71", # M0 绿
+            "#1ABC9C", # Currency 青
+            "#95A5A6", # Reserves 灰
+            "#BDC3C7", # Credit 灰
+            "#2E86C1", # M2 蓝
+            "#BDC3C7", # Valuation 灰
+            "#E74C3C"  # Assets 红
+        ]
+        
+        fig_sankey = go.Figure(data=[go.Sankey(
+            arrangement = "snap", 
+            node = dict(pad = 10, thickness = 20, line = dict(color = "black", width = 0.5), label = label_list, color = color_list, x = node_x, y = node_y), 
+            link = dict(
+                source = [0,       0,   3,        3,        4,  6,                    1,                7,      7,      8], 
+                target = [2,       3,   4,        5,        7,  7,                    7,                9,      9,      9],
+                value =  [tga+rrp, m0,  currency, reserves, currency, bank_credit_creation, fiscal_injection, m2*0.5, m2*0.5, valuation_leverage],
+                # 关键连线解释：
+                # 1 -> 7: 财政部 (Node 1) 直接连向 M2 (Node 7)。这是赤字注入！
+                # 6 -> 7: 银行信贷 (Node 6) 连向 M2。
+                
+                label =  ["损耗", "M0", "现金", "准备金", "现金", "信贷扩张", "赤字支出(暴力注入)", "实体经济", "金融分流", "估值放大"],
+                color =  ["#D7BDE2", "#ABEBC6", "#A2D9CE", "#D5DBDB", "#A2D9CE", "#D5DBDB", "#F5B7B1", "#AED6F1", "#AED6F1", "#E6B0AA"]
+            )
+        )])
+        
+        fig_sankey.update_layout(height=650, font=dict(size=14))
         st.plotly_chart(fig_sankey, use_container_width=True)
+        
+        st.info(f"""
+        **🦅 财政部 (Fiscal) 正在做什么？**
+        * 当前的年化赤字注入速度约为：**${fiscal_injection/1000:.2f}T / 年**。
+        * **看图重点：** 注意那个红色的 **“财政部”** 节点。它像一个外挂的增压泵，即使上面的黄色 **“央行”** 管道在变细（缩表），红色的赤字管道依然在源源不断地往蓝色的 **M2** 里注水。
+        * **结论：** 只要财政赤字不减，市场里的钱就不会少。
+        """)
 
     # ==========================================
     # PROJECT 3: 趋势相关性 (Trend Overlay)
@@ -171,13 +251,7 @@ if not df.empty and 'Net_Liquidity' in df.columns:
         
         col_ctrl1, col_ctrl2 = st.columns([1, 3])
         with col_ctrl1:
-            # 增加 3650天 (10年) 选项
-            lookback_days = st.selectbox(
-                "📅 观测周期", 
-                [365, 730, 1095, 1825, 3650], 
-                index=3, 
-                format_func=lambda x: f"过去 {x/365:.0f} 年" if x >= 365 else f"过去 {x} 天"
-            )
+            lookback_days = st.selectbox("📅 观测周期", [365, 730, 1095, 1825, 3650], index=3, format_func=lambda x: f"过去 {x/365:.0f} 年" if x >= 365 else f"过去 {x} 天")
             chart_mode = st.radio("👀 观测模式", ["双轴叠加 (看背离)", "归一化跑分 (看强弱)"], index=0)
         
         df_chart = df.iloc[-lookback_days:].copy()
@@ -198,33 +272,17 @@ if not df.empty and 'Net_Liquidity' in df.columns:
             
         else:
             def normalize(series): return (series / series.iloc[0] - 1) * 100
-            
             fig_trend.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['Net_Liquidity']), name="💧 净流动性 %", line=dict(color='#2ECC71', width=3)))
             fig_trend.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['SPY']), name="🇺🇸 美股 %", line=dict(color='#E74C3C', width=2)))
             fig_trend.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['BTC-USD']), name="₿ 比特币 %", line=dict(color='#F39C12', width=2)))
             fig_trend.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['M2']), name="💰 M2 %", line=dict(color='#3498DB', width=1, dash='dot')))
-            
             fig_trend.update_yaxes(title_text="累计涨跌幅 (%)")
         
-        fig_trend.update_layout(
-            height=600, 
-            hovermode="x unified",
-            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
-            margin=dict(t=0, l=10, r=10, b=10)
-        )
-        
+        fig_trend.update_layout(height=600, hovermode="x unified", legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"), margin=dict(t=0, l=10, r=10, b=10))
         st.plotly_chart(fig_trend, use_container_width=True)
         
         with col_ctrl2:
-            st.warning(f"""
-            **🧪 历史回测分析 ({lookback_days}天):**
-            
-            1. **2020-2021 (高度相关):** 你会看到绿色的【净流动性】和红色的【美股】几乎同步上涨。这就是“放水牛”。
-            2. **2022 (同步下跌):** 随着 TGA 抽水和美联储缩表，两者双双跳水。
-            3. **2023-至今 (鳄鱼嘴背离):** * 绿色区域（流动性）在横盘甚至下降。
-               * 红色曲线（股市）却在 AI 狂潮下创出新高。
-               * **结论：** 当前的上涨**不是**由央行基础流动性推动的，而是由 **财政赤字** + **企业盈利** + **情绪估值** 共同推升的。这往往意味着波动率会加大。
-            """)
+            st.warning(f"**分析提示：** 如果看到绿色阴影（央行流动性）下降，但资产价格坚挺，请去 Tab 2 看看红色的【财政赤字】是不是在疯狂注水。")
 
 else:
-    st.info("⏳ 正在拉取十年宏观数据，请稍候...")
+    st.info("⏳ 正在拉取十年宏观数据 (含财政部债务)...")
