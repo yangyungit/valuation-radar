@@ -21,8 +21,12 @@ def get_combined_data():
     macro_codes = ['WALCL', 'WTREGEN', 'RRPONTSYD', 'M2SL']
     try:
         df_macro = web.DataReader(macro_codes, 'fred', start_date, end_date)
-        # 强制日频化并填充，解决不同步导致的 NaN
+        # 强制日频化并填充
         df_macro = df_macro.resample('D').ffill().dropna()
+        
+        # 关键修复1：强制剥离时区 (如果有时区的话)，防止 TypeError
+        if df_macro.index.tz is not None:
+            df_macro.index = df_macro.index.tz_localize(None)
         
         # 单位统一为 Billions (十亿)
         df_macro['Fed_Assets'] = df_macro['WALCL'] / 1000
@@ -43,7 +47,12 @@ def get_combined_data():
     }
     try:
         df_assets = yf.download(list(tickers.keys()), start=start_date, end=end_date, progress=False)['Close']
-        df_assets = df_assets.resample('D').ffill().dropna() # 同样强制日频对齐
+        df_assets = df_assets.resample('D').ffill().dropna()
+        
+        # 关键修复2：强制剥离时区 (Yahoo 数据经常带 UTC)
+        if df_assets.index.tz is not None:
+            df_assets.index = df_assets.index.tz_localize(None)
+            
     except:
         df_assets = pd.DataFrame()
 
@@ -55,74 +64,81 @@ df_macro, df_assets, asset_map = get_combined_data()
 if not df_macro.empty and not df_assets.empty:
     
     # --- 准备 Snapshot 数据 (用于 Treemap) ---
-    # 截取最新一天和30天前的数据
     curr_date = df_macro.index[-1]
+    
+    # 寻找30天前的日期
     try:
-        prev_date_loc = df_macro.index.get_loc(curr_date - timedelta(days=30), method='nearest')
-        prev_date = df_macro.index[prev_date_loc]
+        # 使用 searchsorted 替代 get_loc，兼容性更好
+        target_date = curr_date - timedelta(days=30)
+        idx = df_macro.index.searchsorted(target_date)
+        # 确保索引不越界
+        idx = max(0, min(idx, len(df_macro)-1))
+        prev_date = df_macro.index[idx]
     except:
         prev_date = df_macro.index[0]
 
-    def calc_change(df, col, curr_idx, prev_idx):
+    def calc_change(df, col, curr_date, prev_date):
         try:
-            curr_val = df[col].iloc[curr_idx]
-            prev_val = df[col].iloc[prev_idx]
-            if prev_val == 0: return 0
-            return (curr_val - prev_val) / prev_val * 100
-        except: return 0
+            # 使用 asof 或直接索引 (最稳妥的方式)
+            if curr_date in df.index and prev_date in df.index:
+                curr_val = df.loc[curr_date][col]
+                prev_val = df.loc[prev_date][col]
+            else:
+                # 如果找不到确切日期，找最近的 (Backfill/Pad)
+                curr_val = df[col].asof(curr_date)
+                prev_val = df[col].asof(prev_date)
 
-    # 获取索引位置
-    m_curr_idx = -1
-    m_prev_idx = df_macro.index.get_loc(prev_date)
-    a_curr_idx = -1
-    a_prev_idx = df_assets.index.get_loc(prev_date, method='nearest')
+            if pd.isna(prev_val) or prev_val == 0: return 0
+            return (curr_val - prev_val) / prev_val * 100
+        except: 
+            return 0
 
     # === Treemap 数据构建 (真实市值比例) ===
-    # 这里的 Size 是手动录入的 2025 宏观估算值 (Billions)
+    # Size 单位: Billions
     treemap_data = [
         # Source
         {
             "Name": "💰 M2 货币供应", "Category": "Source (水源)", "Size": 22300, 
-            "Change_Pct": calc_change(df_macro, 'M2', m_curr_idx, m_prev_idx),
+            "Change_Pct": calc_change(df_macro, 'M2', curr_date, prev_date),
             "Display": f"${df_macro['M2'].iloc[-1]/1000:.1f}T"
         },
         {
             "Name": "🖨️ 美联储资产", "Category": "Source (水源)", "Size": df_macro['Fed_Assets'].iloc[-1],
-            "Change_Pct": calc_change(df_macro, 'Fed_Assets', m_curr_idx, m_prev_idx),
+            "Change_Pct": calc_change(df_macro, 'Fed_Assets', curr_date, prev_date),
             "Display": f"${df_macro['Fed_Assets'].iloc[-1]/1000:.1f}T"
         },
         {
             "Name": "🏦 净流动性", "Category": "Source (水源)", "Size": df_macro['Net_Liquidity'].iloc[-1],
-            "Change_Pct": calc_change(df_macro, 'Net_Liquidity', m_curr_idx, m_prev_idx),
+            "Change_Pct": calc_change(df_macro, 'Net_Liquidity', curr_date, prev_date),
             "Display": f"${df_macro['Net_Liquidity'].iloc[-1]/1000:.1f}T"
         },
         # Valve
         {
             "Name": "👜 财政部 TGA", "Category": "Valve (调节阀)", "Size": df_macro['TGA'].iloc[-1],
-            "Change_Pct": calc_change(df_macro, 'TGA', m_curr_idx, m_prev_idx),
+            "Change_Pct": calc_change(df_macro, 'TGA', curr_date, prev_date),
             "Display": f"${df_macro['TGA'].iloc[-1]:.0f}B"
         },
         {
             "Name": "♻️ 逆回购 RRP", "Category": "Valve (调节阀)", "Size": df_macro['RRP'].iloc[-1],
-            "Change_Pct": calc_change(df_macro, 'RRP', m_curr_idx, m_prev_idx),
+            "Change_Pct": calc_change(df_macro, 'RRP', curr_date, prev_date),
             "Display": f"${df_macro['RRP'].iloc[-1]:.0f}B"
         },
         # Assets (Size 估算值)
         {
             "Name": "🇺🇸 美国股市", "Category": "Asset (资产池)", "Size": 55000,
-            "Change_Pct": calc_change(df_assets, 'SPY', a_curr_idx, a_prev_idx), "Display": "~$55T"
+            "Change_Pct": calc_change(df_assets, 'SPY', curr_date, prev_date), "Display": "~$55T"
         },
         {
             "Name": "📜 美国债市", "Category": "Asset (资产池)", "Size": 52000,
-            "Change_Pct": calc_change(df_assets, 'TLT', a_curr_idx, a_prev_idx), "Display": "~$52T"
+            "Change_Pct": calc_change(df_assets, 'TLT', curr_date, prev_date), "Display": "~$52T"
         },
         {
             "Name": "🥇 黄金市场", "Category": "Asset (资产池)", "Size": 14000,
-            "Change_Pct": calc_change(df_assets, 'GLD', a_curr_idx, a_prev_idx), "Display": "~$14T"
+            "Change_Pct": calc_change(df_assets, 'GLD', curr_date, prev_date), "Display": "~$14T"
         },
         {
             "Name": "₿ 加密货币", "Category": "Asset (资产池)", "Size": 2500,
-            "Change_Pct": calc_change(df_assets, 'BTC-USD', a_curr_idx, a_prev_idx), "Display": "~$2.5T"
+            "Change_Pct": calc_change(df_assets, 'BTC-USD', curr_date, prev_date), "Display": "~$2.5T"
         }
     ]
     
@@ -157,17 +173,20 @@ if not df_macro.empty and not df_assets.empty:
     df_chart['🏦 净流动性 (Net Liq)'] = df_macro['Net_Liquidity']
     df_chart['🖨️ 美联储资产'] = df_macro['Fed_Assets']
     
-    # 映射资产数据到同一张表 (注意要处理周末填充)
+    # 映射资产数据到同一张表
     for ticker_code, name in asset_map.items():
         if ticker_code in df_assets.columns:
-            df_chart[name] = df_assets[ticker_code]
+            # 使用 asof 对齐数据，防止索引微小差异
+            df_chart[name] = df_assets[ticker_code].asof(df_chart.index)
             
     # 截取最近1年
     one_year_ago = df_chart.index[-1] - timedelta(days=365)
     df_chart = df_chart[df_chart.index >= one_year_ago]
     
     # 归一化处理 (Normalize)
-    df_norm = df_chart.apply(lambda x: (x / x.iloc[0] - 1) * 100)
+    # 确保第一行不为 NaN 或 0
+    df_chart = df_chart.fillna(method='bfill').fillna(method='ffill')
+    df_norm = df_chart.apply(lambda x: (x / x.iloc[0] - 1) * 100 if x.iloc[0] != 0 else 0)
     
     # 绘图
     fig_line = go.Figure()
