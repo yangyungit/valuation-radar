@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="全球流动性时光机", layout="wide")
 
 st.title("💸 全球流动性时光机 (Liquidity Time Machine)")
-st.caption("🚀 **极速引擎 V2：** 采用 ID 追踪技术，彻底修复动画报错，拖动滑块**0延迟**。")
+st.caption("🚀 **极速引擎 V3：** 修复动画渲染逻辑 | 逻辑：单根节点追踪 + 动态市值伸缩")
 
 # --- 1. 数据引擎 ---
 @st.cache_data(ttl=3600*4)
@@ -75,7 +75,7 @@ def generate_animation_frames(df):
         "GLD": 14000, "BTC-USD": 2500, "USO": 2000
     }
     
-    # 定义必须存在的对象
+    # 定义全员名单 (Root 必须统一)
     items = [
         ("💰 M2 货币", "M2", "Source", "Macro"),
         ("🖨️ 美联储", "Fed_Assets", "Source", "Macro"),
@@ -114,6 +114,7 @@ def generate_animation_frames(df):
                 if val_prev != 0:
                     pct = (val_curr - val_prev) / val_prev * 100
                 
+                # 动态 Size 逻辑 (保留你的需求)
                 if asset_type == 'Macro':
                     size = abs(val_curr)
                 else:
@@ -127,12 +128,9 @@ def generate_animation_frames(df):
             if size > 1000: display_val = f"${size/1000:.1f}T"
             if asset_type == 'Macro' and val_curr > 1000: display_val = f"${val_curr/1000:.1f}T"
 
-            # 关键修复：手动构建唯一 ID
-            unique_id = f"{cat}/{name}"
-
             frames.append({
                 "Date": date_str,
-                "ID": unique_id, # <--- 显式 ID
+                "Root": "全球资金池", # <--- 关键修复：统一的根节点
                 "Name": name,
                 "Category": cat,
                 "Size": max(size, 0.1), 
@@ -140,65 +138,55 @@ def generate_animation_frames(df):
                 "Display": display_val
             })
             
-    df_frames = pd.DataFrame(frames)
-    
-    # 再次确保类型安全
-    if not df_frames.empty:
-        df_frames['Size'] = df_frames['Size'].astype(float)
-        df_frames['Color'] = df_frames['Color'].astype(float)
-        df_frames['Date'] = df_frames['Date'].astype(str)
-        
-    return df_frames
+    return pd.DataFrame(frames)
 
 # --- 3. 页面渲染 ---
 df = get_all_data()
 
 if not df.empty and 'Net_Liquidity' in df.columns:
     
-    with st.spinner("🎥 正在加载高速渲染引擎..."):
+    with st.spinner("🎥 正在渲染前端动画引擎..."):
         df_anim = generate_animation_frames(df)
     
     if not df_anim.empty:
+        # === Plotly 核心配置 ===
+        # 关键修复：path必须包含 Root，且移除 ids 参数
         fig = px.treemap(
             df_anim,
-            path=['Category', 'Name'], # 移除 Root，简化层级
+            path=['Root', 'Category', 'Name'], 
             values='Size',
             color='Color',
             range_color=[-8, 8],
             color_continuous_scale=['#FF4B4B', '#1E1E1E', '#09AB3B'],
             hover_data=['Display', 'Color'],
-            animation_frame="Date",
-            # 核心参数：告诉 Plotly 谁是谁，不要瞎猜
-            ids="ID" 
+            animation_frame="Date"
         )
         
         fig.update_traces(
             texttemplate="<b>%{label}</b><br>%{customdata[0]}<br>%{color:.2f}%",
             textfont=dict(size=15),
-            # 优化边框
-            marker=dict(line=dict(width=1, color='black'))
+            marker=dict(line=dict(width=1, color='black')) # 加点边框更清晰
         )
         
+        # 优化滑块
         fig.update_layout(
             height=700,
-            margin=dict(t=10, l=10, r=10, b=10),
+            margin=dict(t=0, l=0, r=0, b=0),
             paper_bgcolor='rgba(0,0,0,0)',
-            # 仅保留滑块，隐藏播放按钮
             updatemenus=[dict(type="buttons", showactive=False, visible=False)],
             sliders=[{
                 "currentvalue": {"prefix": "📅 历史回放: ", "font": {"size": 20}},
                 "pad": {"t": 50},
                 "len": 1.0,
                 "x": 0, "y": 0,
-                # 丝滑过渡参数
                 "transition": {"duration": 300, "easing": "cubic-in-out"}
             }]
         )
         
         st.plotly_chart(fig, use_container_width=True)
-        st.success("✅ 就绪。请拖动下方滑块。")
+        st.success("✅ 引擎就绪。请直接拖动滑块，体验丝滑变动。")
         
     else:
-        st.error("数据处理异常，请刷新重试。")
+        st.error("数据处理异常")
 else:
     st.info("⏳ 正在初始化...")
