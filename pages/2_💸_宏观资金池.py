@@ -3,32 +3,33 @@ import pandas as pd
 import pandas_datareader.data as web
 import yfinance as yf
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="全球流动性监控", layout="wide")
+st.set_page_config(page_title="全球流动性时光机", layout="wide")
 
-# --- 侧边栏：视角切换 ---
+# --- 侧边栏：控制台 ---
 with st.sidebar:
-    st.header("🔭 观测模式")
+    st.header("🎮 时光机控制台")
     view_mode = st.radio(
         "选择方块大小 (Size) 代表什么？",
         ["🌍 真实市值 (Who is Big?)", "⚡ 剧烈程度 (Who is Moving?)"],
         index=0
     )
     
-    if "真实" in view_mode:
-        st.info("📦 **存量逻辑:**\n美股($55T) > 美联储($7T)。\n展示物理世界的真实体量对比。")
-    else:
-        st.success("💓 **心率逻辑:**\nSize = |30天涨跌幅%|\n如果TGA变动20%，美股变动2%，TGA的方块就是美股的10倍大。\n**谁动作大，谁就显眼。**")
+    st.info("""
+    🕹️ **如何使用时光机：**
+    1. 图表底部会出现一个 **播放条**。
+    2. 点击 ▶️ **播放**：自动演示过去一年的资金演变。
+    3. **拖拽滑块**：手动定格在历史的某一周，查看当时谁大谁小。
+    """)
 
-st.title("💸 全球流动性全景 (Global Liquidity Monitor)")
+st.title("💸 全球流动性时光机 (Liquidity Time Machine)")
 
-# --- 1. 坦克级数据引擎 ---
+# --- 1. 数据引擎 (Tank Engine) ---
 @st.cache_data(ttl=3600*4)
 def get_all_data():
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=730)
+    start_date = end_date - timedelta(days=400) # 拉取过去400天
     
     # A. 宏观数据
     try:
@@ -71,120 +72,132 @@ def get_all_data():
         if all(col in df_all.columns for col in cols):
             df_all['Net_Liquidity'] = df_all['Fed_Assets'] - df_all['TGA'] - df_all['RRP']
             
-    return df_all, tickers
+    return df_all
 
-# --- 2. 页面渲染 ---
-df, asset_map = get_all_data()
+# --- 2. 动画数据生成器 (The Animator) ---
+@st.cache_data(ttl=3600)
+def generate_animation_frames(df, mode):
+    """
+    将宽表转换为长表，并按周重采样，生成适合 Plotly Animation 的格式
+    """
+    if df.empty: return pd.DataFrame()
 
-if not df.empty and 'Net_Liquidity' in df.columns:
+    # 1. 重采样为周频 (每周五)，减少帧数以保证流畅度
+    df_weekly = df.resample('W-FRI').last()
     
-    curr_date = df.index[-1]
-    prev_date = curr_date - timedelta(days=30)
-    try:
-        prev_idx_loc = df.index.get_indexer([prev_date], method='nearest')[0]
-        prev_valid_date = df.index[prev_idx_loc]
-    except:
-        prev_valid_date = df.index[0]
+    # 只取最近52周（一年）
+    df_weekly = df_weekly.iloc[-52:] 
 
+    frames = []
+    
     # 基础估值 (Base Cap in Billions)
     BASE_CAPS = {
         "M2": 22300, "SPY": 55000, "TLT": 52000, 
         "GLD": 14000, "BTC-USD": 2500, "USO": 2000
     }
 
-    def get_metrics(col, asset_type):
-        if col not in df.columns: return 0, 0, 0
-        v_curr = df.loc[curr_date, col]
-        v_prev = df.loc[prev_valid_date, col]
+    # 定义要展示的项目
+    items = [
+        ("💰 M2 货币供应", "M2", "Source (水源)", "Macro"),
+        ("🖨️ 美联储资产", "Fed_Assets", "Source (水源)", "Macro"),
+        ("🏦 净流动性", "Net_Liquidity", "Source (水源)", "Macro"),
+        ("👜 财政部 TGA", "TGA", "Valve (调节阀)", "Macro"),
+        ("♻️ 逆回购 RRP", "RRP", "Valve (调节阀)", "Macro"),
+        ("🇺🇸 美股", "SPY", "Asset (资产)", "Asset"),
+        ("📜 美债", "TLT", "Asset (资产)", "Asset"),
+        ("🥇 黄金", "GLD", "Asset (资产)", "Asset"),
+        ("₿ 比特币", "BTC-USD", "Asset (资产)", "Asset")
+    ]
+
+    # 遍历每一周
+    for date in df_weekly.index:
+        date_str = date.strftime('%Y-%m-%d')
         
-        pct_change = (v_curr - v_prev) / v_prev * 100 if v_prev != 0 else 0
+        # 找30天前的数据 (Rolling Window)
+        prev_date = date - timedelta(days=30)
+        # 即使找不到完全匹配的，也找最近的
+        try:
+            prev_idx = df.index.get_indexer([prev_date], method='nearest')[0]
+            val_prev_row = df.iloc[prev_idx]
+        except:
+            continue
+
+        row_data = df_weekly.loc[date]
+
+        for name, col, cat, asset_type in items:
+            if col not in df.columns: continue
+            
+            val_curr = row_data[col]
+            val_prev = val_prev_row[col]
+            
+            # 计算指标
+            if pd.isna(val_curr) or val_curr == 0: continue
+            
+            pct = (val_curr - val_prev) / val_prev * 100 if val_prev != 0 else 0
+            
+            # 决定 Size
+            if "真实" in mode:
+                if asset_type == 'Macro': size = abs(val_curr) # 取绝对值防负数
+                else: size = BASE_CAPS.get(col, 100)
+            else:
+                # 剧烈程度模式
+                size = abs(pct) + 0.1 # +0.1 保证不消失
+            
+            # 文本显示
+            display_val = f"${val_curr:.1f}B" if val_curr < 10000 else f"${val_curr/1000:.1f}T"
+            if asset_type == 'Asset': display_val = f"~${BASE_CAPS.get(col,0)/1000:.1f}T"
+
+            frames.append({
+                "Date": date_str,
+                "Name": name,
+                "Category": cat,
+                "Size": size,
+                "Color_Pct": pct,
+                "Display": display_val
+            })
+            
+    return pd.DataFrame(frames)
+
+# --- 3. 页面渲染 ---
+df = get_all_data()
+
+if not df.empty and 'Net_Liquidity' in df.columns:
+    
+    # 生成动画数据
+    df_anim = generate_animation_frames(df, view_mode)
+    
+    if not df_anim.empty:
+        # 动态 Treemap
+        fig = px.treemap(
+            df_anim,
+            path=[px.Constant("全景资金池"), 'Category', 'Name'],
+            values='Size',
+            color='Color_Pct',
+            color_continuous_scale=['#FF4B4B', '#262730', '#09AB3B'],
+            range_color=[-5, 5],
+            hover_data=['Display', 'Color_Pct'],
+            animation_frame="Date", # <--- 核心：按日期生成动画帧
+            animation_group="Name"  # <--- 核心：保证方块平滑过渡
+        )
         
-        # 1. 存量大小
-        if asset_type == 'Macro': cap_size = v_curr 
-        else: cap_size = BASE_CAPS.get(col, 100)
-            
-        # 2. 波动强度 (Intensity) = 绝对百分比变动
-        # 给它加个底数 0.5，防止变动为0时方块消失
-        intensity_size = abs(pct_change) + 0.5
-            
-        return v_curr, pct_change, cap_size, intensity_size
-
-    # === 构建 Treemap 数据 ===
-    data_list = []
-    
-    def add_item(name, col, cat, asset_type):
-        val, pct, cap, intensity = get_metrics(col, asset_type)
+        fig.update_traces(
+            texttemplate="<b>%{label}</b><br>%{customdata[0]}<br>%{color:.2f}%",
+            textfont=dict(size=14)
+        )
         
-        # 核心逻辑修正：根据模式选择 Size
-        if "真实" in view_mode:
-            final_size = cap # 存量模式
-            mode_desc = "市值/规模"
-        else:
-            final_size = intensity # 剧烈程度模式
-            mode_desc = "30天变动幅度"
-            
-        display_val = f"${val:.1f}B" if val < 10000 else f"${val/1000:.1f}T"
-        if asset_type == 'Asset': display_val = f"~${cap/1000:.1f}T"
-            
-        data_list.append({
-            "Name": name, "Category": cat, 
-            "Size": final_size, "Pct": pct, 
-            "Txt": display_val,
-            "Intensity": f"{abs(pct):.2f}%"
-        })
+        fig.update_layout(
+            height=650,
+            margin=dict(t=0, l=0, r=0, b=0),
+            coloraxis_colorbar=dict(title="30天涨跌%"),
+            sliders=[dict(currentvalue={"prefix": "历史回放: "}, pad={"t": 50})] # 调整滑块位置
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.success(f"🎥 已生成 {len(df_anim['Date'].unique())} 周的历史快照。点击下方 ▶️ 播放键查看演变。")
 
-    # Source & Valve
-    add_item("💰 M2 货币供应", "M2", "Source (水源)", "Macro")
-    add_item("🖨️ 美联储资产", "Fed_Assets", "Source (水源)", "Macro")
-    add_item("🏦 净流动性", "Net_Liquidity", "Source (水源)", "Macro")
-    add_item("👜 财政部 TGA", "TGA", "Valve (调节阀)", "Macro")
-    add_item("♻️ 逆回购 RRP", "RRP", "Valve (调节阀)", "Macro")
-    
-    # Assets
-    add_item("🇺🇸 美股", "SPY", "Asset (资产)", "Asset")
-    add_item("📜 美债", "TLT", "Asset (资产)", "Asset")
-    add_item("🥇 黄金", "GLD", "Asset (资产)", "Asset")
-    add_item("₿ 比特币", "BTC-USD", "Asset (资产)", "Asset")
-    
-    # === 绘制 Treemap ===
-    st.markdown(f"### 🗺️ 资金全景图")
-    
-    fig_tree = px.treemap(
-        pd.DataFrame(data_list), 
-        path=[px.Constant("全景资金池"), 'Category', 'Name'], 
-        values='Size', color='Pct',
-        color_continuous_scale=['#FF4B4B', '#262730', '#09AB3B'], 
-        range_color=[-5, 5],
-        hover_data=['Txt', 'Pct', 'Intensity']
-    )
-    
-    # Tooltip 动态文案
-    hover_template = "<b>%{label}</b><br>当前数值: %{customdata[0]}<br>30天涨跌: %{color:.2f}%<br>变动剧烈度: %{customdata[2]}<extra></extra>"
-    
-    fig_tree.update_traces(texttemplate="<b>%{label}</b><br>%{customdata[0]}<br>%{color:.2f}%", hovertemplate=hover_template, textfont=dict(size=14))
-    fig_tree.update_layout(margin=dict(t=0, l=0, r=0, b=0), height=550)
-    st.plotly_chart(fig_tree, use_container_width=True)
-
-    # === 深度分析 (K线图) ===
-    st.markdown("---")
-    st.markdown("### 🔬 净流动性分解 (The Breakdown)")
-    
-    df_chart = df.loc[df.index >= (curr_date - timedelta(days=365))].copy()
-    def normalize(series): return (series / series.iloc[0] - 1) * 100
-
-    fig_line = go.Figure()
-    
-    # 资金面
-    fig_line.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['Net_Liquidity']), name='🏦 净流动性 (总水位)', line=dict(color='#00FF00', width=4, dash='dot')))
-    fig_line.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['Fed_Assets']), name='🖨️ 美联储资产', line=dict(color='#FFFF00', width=1), opacity=0.7))
-    fig_line.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['TGA']), name='👜 TGA (反向)', line=dict(color='#FF00FF', width=1), opacity=0.7))
-    fig_line.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['RRP']), name='♻️ 逆回购 (反向)', line=dict(color='#00FFFF', width=1), opacity=0.7))
-    
-    # 资产面
-    fig_line.add_trace(go.Scatter(x=df_chart.index, y=normalize(df_chart['SPY']), name='🇺🇸 美股', line=dict(color='#FF4B4B', width=2)))
-
-    fig_line.update_layout(template="plotly_dark", height=500, hovermode="x unified", yaxis_title="累计变动 (%)", legend=dict(orientation="h", y=1.1))
-    st.plotly_chart(fig_line, use_container_width=True)
+    else:
+        st.warning("数据不足以生成动画，请稍后再试。")
 
 else:
-    st.warning("⏳ 数据正在加载，请稍候...")
+    st.info("⏳ 正在启动时光机引擎... (首次加载需下载历史数据)")
