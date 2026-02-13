@@ -8,212 +8,189 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="全球流动性监控", layout="wide")
 
 st.title("💸 全球流动性全景 (Global Liquidity Monitor)")
-st.caption("数据源: Federal Reserve (FRED) & Yahoo Finance | 修正版: 单位统一为 Billion")
+st.caption("逻辑修正: 方块大小代表【总市值/规模】，颜色代表【30天资金流向】 | 单位: Billions (十亿美元)")
 
-# --- 1. 核心引擎：从 FRED 获取宏观数据 (已修复单位问题) ---
+# --- 1. 宏观数据引擎 (FRED) ---
 @st.cache_data(ttl=3600*12)
 def get_macro_data():
-    # 拉取 2 年数据，确保一定能找到同比数据
     start_date = datetime.now() - timedelta(days=730) 
     end_date = datetime.now()
-
-    # FRED 代码
-    # WALCL: 美联储总资产 (Millions)
-    # WTREGEN: 财政部 TGA 账户 (Millions) -> 注意：这也是 Millions
-    # RRPONTSYD: 隔夜逆回购 (Billions) -> 注意：这是 Billions
-    # M2SL: M2 广义货币 (Billions, 月更)
+    
+    # FRED Code
     macro_codes = ['WALCL', 'WTREGEN', 'RRPONTSYD', 'M2SL']
     
     try:
         df = web.DataReader(macro_codes, 'fred', start_date, end_date)
-        
-        # 1. 强力填充：先用前值填补空缺，再丢弃开头没数的行
         df = df.resample('D').ffill().dropna()
         
-        # 2. 单位统一修正 (全部转为 Billions 十亿)
-        df['Fed_Assets'] = df['WALCL'] / 1000    # Million -> Billion
-        df['TGA'] = df['WTREGEN'] / 1000         # Million -> Billion (之前这里漏了除以1000)
-        df['RRP'] = df['RRPONTSYD']              # 已经是 Billion
-        df['M2'] = df['M2SL']                    # 已经是 Billion
+        # 统一单位: Billions
+        df['Fed_Assets'] = df['WALCL'] / 1000   
+        df['TGA'] = df['WTREGEN'] / 1000        
+        df['RRP'] = df['RRPONTSYD']             
+        df['M2'] = df['M2SL']                   
         
-        # 3. 计算净流动性 (Net Liquidity)
-        # 公式: 央行总资产 - TGA - RRP
         df['Net_Liquidity'] = df['Fed_Assets'] - df['TGA'] - df['RRP']
-        
         return df
-    except Exception as e:
-        st.error(f"连接美联储数据库失败: {e}")
+    except:
         return pd.DataFrame()
 
-# --- 2. 市场引擎：从 YFinance 获取资产数据 ---
+# --- 2. 资产数据引擎 (YFinance + 市值估算) ---
 @st.cache_data(ttl=3600)
-def get_asset_data():
-    assets = {
-        "🇺🇸 美股 (SPY)": "SPY",
-        "🇺🇸 美债 (TLT)": "TLT",
-        "🥇 黄金 (GLD)": "GLD",
-        "₿ 比特币 (BTC)": "BTC-USD",
-        "🛢️ 原油 (USO)": "USO"
+def get_asset_changes():
+    # 这里我们只取 ETF 的涨跌幅作为"体温计"
+    # 但方块的大小 (Size) 我们将手动赋予"真实宏观规模"
+    tickers = {
+        "SPY": "美股 (S&P 500 Proxy)",
+        "TLT": "美债 (Treasury Proxy)",
+        "GLD": "黄金 (Gold Proxy)",
+        "BTC-USD": "比特币 (Crypto)",
+        "USO": "原油 (Oil)",
+        "BIL": "现金 (Cash)"
     }
     
-    tickers = list(assets.values())
     try:
-        # 下载 6 个月数据
-        data = yf.download(tickers, period="6mo", progress=False)['Close']
+        data = yf.download(list(tickers.keys()), period="3mo", progress=False)['Close']
+        changes = {}
         
-        records = []
-        for name, ticker in assets.items():
+        for ticker in tickers:
             if ticker in data.columns:
                 series = data[ticker].dropna()
-                if len(series) < 30: continue
+                if len(series) < 5: 
+                    changes[ticker] = 0
+                    continue
                 
                 latest = series.iloc[-1]
-                
-                # 寻找 30 天前的价格
+                # 强行找30天前，找不到就找最接近的
                 try:
-                    target_date = series.index[-1] - timedelta(days=30)
-                    idx = series.index.searchsorted(target_date)
-                    # 防止索引越界
+                    target = series.index[-1] - timedelta(days=30)
+                    idx = series.index.searchsorted(target)
                     idx = max(0, min(idx, len(series)-1))
                     prev = series.iloc[idx]
                 except:
                     prev = series.iloc[0]
+                    
+                if prev == 0: changes[ticker] = 0
+                else: changes[ticker] = (latest - prev) / prev * 100
                 
-                change_pct = (latest - prev) / prev * 100
-                
-                # 视觉权重 (为了图表美观设定的虚拟大小)
-                if "SPY" in ticker: size = 4000
-                elif "TLT" in ticker: size = 4500
-                elif "GLD" in ticker: size = 800
-                elif "BTC" in ticker: size = 300
-                else: size = 200
-                
-                records.append({
-                    "Name": name,
-                    "Type": "Asset Class (资产)",
-                    "Value": latest,
-                    "Display_Value": f"${latest:.2f}",
-                    "Change_Pct": change_pct,
-                    "Size": size
-                })
-        return pd.DataFrame(records)
+        return changes
     except:
-        return pd.DataFrame()
+        return {}
 
-# --- 3. 页面渲染 ---
+# --- 3. 构建真实比例模型 ---
 df_macro = get_macro_data()
-df_assets = get_asset_data()
+asset_changes = get_asset_changes()
 
-if not df_macro.empty and not df_assets.empty:
-    
-    # --- 计算宏观数据的 30 天变化 ---
+if not df_macro.empty:
     curr = df_macro.iloc[-1]
     
-    # 找 30 天前
-    try:
-        target_date = df_macro.index[-1] - timedelta(days=30)
-        idx = df_macro.index.searchsorted(target_date)
-        idx = max(0, min(idx, len(df_macro)-1))
-        prev = df_macro.iloc[idx]
-    except:
-        prev = df_macro.iloc[0]
+    # 计算宏观指标变动 %
+    def get_macro_pct(col):
+        try:
+            target = df_macro.index[-1] - timedelta(days=30)
+            idx = df_macro.index.searchsorted(target)
+            idx = max(0, min(idx, len(df_macro)-1))
+            prev = df_macro.iloc[idx][col]
+            if prev == 0: return 0
+            return (curr[col] - prev) / prev * 100
+        except: return 0
 
-    def get_pct_change(col):
-        if prev[col] == 0: return 0
-        return (curr[col] - prev[col]) / prev[col] * 100
+    # === 核心修正：手动定义各大池子的"真实规模" (Market Cap Estimates) ===
+    # 单位: Billions (十亿美元)
+    # 这些数字是根据 2024-2025 的宏观概算，确保视觉比例正确
     
-    # 构建 Treemap 数据 (加入 M2)
-    macro_blocks = [
+    treemap_data = [
+        # --- 源头 (Source) ---
         {
-            "Name": "🏦 净流动性 (Net Liquidity)", 
-            "Type": "Source (水源)",
-            "Value": curr['Net_Liquidity'],
-            "Display_Value": f"${curr['Net_Liquidity']:.0f}B",
-            "Change_Pct": get_pct_change('Net_Liquidity'),
-            "Size": 6000
+            "Name": "💰 M2 货币供应", "Category": "Source (水源)",
+            "Size": curr['M2'],  # 实时数据 (~21,000B)
+            "Change_Pct": get_macro_pct('M2'),
+            "Label_Val": f"${curr['M2']/1000:.1f}T" # 显示为 Trillion
         },
         {
-            "Name": "🖨️ 美联储资产 (Fed Assets)", 
-            "Type": "Source (水源)",
-            "Value": curr['Fed_Assets'],
-            "Display_Value": f"${curr['Fed_Assets']:.0f}B",
-            "Change_Pct": get_pct_change('Fed_Assets'),
-            "Size": 5000
+            "Name": "🖨️ 美联储资产", "Category": "Source (水源)",
+            "Size": curr['Fed_Assets'], # 实时数据 (~7,000B)
+            "Change_Pct": get_macro_pct('Fed_Assets'),
+            "Label_Val": f"${curr['Fed_Assets']/1000:.1f}T"
         },
         {
-            "Name": "💰 M2 货币供应 (Money Supply)", 
-            "Type": "Source (水源)",
-            "Value": curr['M2'],
-            "Display_Value": f"${curr['M2']:.0f}B",
-            "Change_Pct": get_pct_change('M2'),
-            "Size": 4000
+            "Name": "🏦 净流动性", "Category": "Source (水源)",
+            "Size": curr['Net_Liquidity'], # 实时数据
+            "Change_Pct": get_macro_pct('Net_Liquidity'),
+            "Label_Val": f"${curr['Net_Liquidity']/1000:.1f}T"
+        },
+
+        # --- 调节阀 (Valves) ---
+        {
+            "Name": "👜 财政部 TGA", "Category": "Valve (调节阀)",
+            "Size": curr['TGA'], 
+            "Change_Pct": get_macro_pct('TGA'),
+            "Label_Val": f"${curr['TGA']:.0f}B"
         },
         {
-            "Name": "👜 财政部 TGA (Gov)", 
-            "Type": "Valve (调节阀)",
-            "Value": curr['TGA'],
-            "Display_Value": f"${curr['TGA']:.0f}B",
-            "Change_Pct": get_pct_change('TGA'),
-            "Size": 1500
+            "Name": "♻️ 逆回购 RRP", "Category": "Valve (调节阀)",
+            "Size": curr['RRP'], 
+            "Change_Pct": get_macro_pct('RRP'),
+            "Label_Val": f"${curr['RRP']:.0f}B"
+        },
+
+        # --- 资产池 (Market Cap Estimates) ---
+        # 这里我们用固定的"宏观估值"作为Size，用ETF涨跌幅作为Color
+        {
+            "Name": "🇺🇸 美国股市", "Category": "Asset (资产池)",
+            "Size": 55000, # 估算 $55 Trillion (视觉上应该是Fed的8倍)
+            "Change_Pct": asset_changes.get('SPY', 0),
+            "Label_Val": "~$55.0T"
         },
         {
-            "Name": "♻️ 逆回购 RRP (Parking)", 
-            "Type": "Valve (调节阀)",
-            "Value": curr['RRP'],
-            "Display_Value": f"${curr['RRP']:.0f}B",
-            "Change_Pct": get_pct_change('RRP'),
-            "Size": 1500
+            "Name": "📜 美国债市", "Category": "Asset (资产池)",
+            "Size": 52000, # 估算 $52 Trillion
+            "Change_Pct": asset_changes.get('TLT', 0), # 用TLT代表债市方向
+            "Label_Val": "~$52.0T"
+        },
+        {
+            "Name": "🥇 黄金市场", "Category": "Asset (资产池)",
+            "Size": 14000, # 估算 $14 Trillion
+            "Change_Pct": asset_changes.get('GLD', 0),
+            "Label_Val": "~$14.0T"
+        },
+        {
+            "Name": "₿ 加密货币", "Category": "Asset (资产池)",
+            "Size": 2500,  # 估算 $2.5 Trillion
+            "Change_Pct": asset_changes.get('BTC-USD', 0),
+            "Label_Val": "~$2.5T"
         }
     ]
     
-    df_all = pd.concat([pd.DataFrame(macro_blocks), df_assets], ignore_index=True)
-    
-    # 绘制 Treemap
+    df_tree = pd.DataFrame(treemap_data)
+
+    # --- 绘制图表 ---
     fig = px.treemap(
-        df_all,
-        path=[px.Constant("全球资金全景"), 'Type', 'Name'],
-        values='Size',
+        df_tree,
+        path=[px.Constant("全球资金全景"), 'Category', 'Name'],
+        values='Size', # 现在 Size 代表真实的万亿级市值
         color='Change_Pct',
         color_continuous_scale=['#FF4B4B', '#262730', '#09AB3B'],
         color_continuous_midpoint=0,
         range_color=[-5, 5],
-        hover_data=['Display_Value', 'Change_Pct'],
+        hover_data=['Label_Val', 'Change_Pct'],
     )
     
     fig.update_traces(
-        textinfo="label+value+percent entry",
-        texttemplate="<b>%{label}</b><br>%{customdata[0]}<br>30天变动: %{color:.2f}%",
+        textinfo="label+text+value",
+        texttemplate="<b>%{label}</b><br>%{customdata[0]}<br>30天: %{color:.2f}%",
         textfont=dict(size=14)
     )
-    fig.update_layout(height=650, margin=dict(t=0, l=0, r=0, b=0))
+    fig.update_layout(height=700, margin=dict(t=20, l=10, r=10, b=10))
     st.plotly_chart(fig, use_container_width=True)
-
-    # --- 底部：深度宏观解释 (Cheat Sheet) ---
-    st.markdown("---")
-    st.subheader("🧐 宏观机制硬核解读")
     
-    c1, c2 = st.columns(2)
+    st.markdown("""
+    ---
+    ### 📊 比例说明 (Scale)
+    * **方块大小 (Area):** 代表该资产类别的**总市值 (Market Cap)**。
+        * 你会发现 **股市** 和 **债市** 的方块非常巨大（约 $50T+），而 **美联储资产** 相对较小（$7T）。这才是真实的金融世界比例。
+    * **颜色 (Color):** 代表该资产近期 (30天) 的**资金流向**。
+    * **数据源:** 宏观数据来自 FRED，资产涨跌幅代理自 Yahoo Finance。
+    """)
     
-    with c1:
-        st.markdown("### 1. 钱从哪来？(水源)")
-        st.info(f"""
-        * **美联储资产 (Fed Assets):** 印钞机的总开关。
-        * **M2 货币供应:** 老百姓和企业的存款总和。(虽然大，但流动性较慢)
-        * **🏦 净流动性 (Net Liquidity):** **金融市场的“高能燃油”**。
-            * 公式 = Fed资产 - TGA - RRP。
-            * 它是银行系统真正可以用来加杠杆、买股票的闲钱。
-            * **与美股关系:** 极度正相关。净流动性涨，标普500通常会涨。
-        """)
-
-    with c2:
-        st.markdown("### 2. 钱去哪了？(调节)")
-        st.warning(f"""
-        * **👜 财政部 TGA (政府金库):** * 如果它**变红 (下跌)**：说明政府在花钱，资金流入市场 -> **利好**。
-            * 如果它**变绿 (上涨)**：说明政府在收税/发债存钱，资金被抽走 -> **利空**。
-        * **♻️ 逆回购 RRP (资金避风港):**
-            * 如果它**变红 (下跌)**：说明钱不愿意躺平了，流出来买资产 -> **利好**。
-            * 如果它**变绿 (上涨)**：说明市场风险大，钱都躲回美联储了 -> **利空**。
-        """)
-        
 else:
-    st.info("⏳ 正在重新连接美联储 (FRED) 获取最新数据，请稍候...")
+    st.info("⏳ 正在获取 FRED 数据，请稍候...")
