@@ -4,6 +4,7 @@ import pandas_datareader.data as web
 import yfinance as yf
 import plotly.express as px
 from datetime import datetime, timedelta
+import numpy as np
 
 st.set_page_config(page_title="全球流动性时光机", layout="wide")
 
@@ -17,10 +18,10 @@ with st.sidebar:
     )
     
     st.info("""
-    🕹️ **如何使用时光机：**
-    1. 点击图表底部的 ▶️ **播放键**。
-    2. 观察过去一年方块大小和颜色的律动。
-    3. **TGA (紫色)** 变大通常意味着流动性收紧。
+    🕹️ **操作指南：**
+    1. **核心修复：** 已解决动画报错问题。现在每一周的数据都强制对齐。
+    2. 点击图表底部的 ▶️ **播放键**。
+    3. 也可以拖动滑块，逐周复盘资金流向。
     """)
 
 st.title("💸 全球流动性时光机 (Liquidity Time Machine)")
@@ -74,14 +75,14 @@ def get_all_data():
             
     return df_all
 
-# --- 2. 动画帧生成器 (修复版) ---
+# --- 2. 动画帧生成器 (增强稳定性版) ---
 @st.cache_data(ttl=3600)
 def generate_animation_frames(df, mode):
     if df.empty: return pd.DataFrame()
 
-    # 重采样为周频 (每周五)
+    # 重采样为周频
     df_weekly = df.resample('W-FRI').last()
-    df_weekly = df_weekly.iloc[-52:] # 取最近一年
+    df_weekly = df_weekly.iloc[-52:] 
 
     frames = []
     
@@ -91,6 +92,7 @@ def generate_animation_frames(df, mode):
         "GLD": 14000, "BTC-USD": 2500, "USO": 2000
     }
 
+    # 定义全量对象 (必须在每一帧都出现，不能少！)
     items = [
         ("💰 M2 货币供应", "M2", "Source (水源)", "Macro"),
         ("🖨️ 美联储资产", "Fed_Assets", "Source (水源)", "Macro"),
@@ -106,42 +108,56 @@ def generate_animation_frames(df, mode):
     for date in df_weekly.index:
         date_str = date.strftime('%Y-%m-%d')
         
-        # 找30天前
+        # 找对比日期
         prev_date = date - timedelta(days=30)
         try:
             prev_idx = df.index.get_indexer([prev_date], method='nearest')[0]
             val_prev_row = df.iloc[prev_idx]
         except:
-            continue
+            # 如果找不到前值，就用当前行代替（变动为0）
+            val_prev_row = df_weekly.loc[date]
 
         row_data = df_weekly.loc[date]
 
         for name, col, cat, asset_type in items:
-            if col not in df.columns: continue
-            
-            val_curr = row_data[col]
-            val_prev = val_prev_row[col]
-            
-            if pd.isna(val_curr) or val_curr == 0: continue
-            
-            pct = (val_curr - val_prev) / val_prev * 100 if val_prev != 0 else 0
-            
-            # Size 逻辑
-            if "真实" in mode:
-                if asset_type == 'Macro': size = abs(val_curr)
-                else: size = BASE_CAPS.get(col, 100)
-            else:
-                size = abs(pct) + 0.1 
-            
-            display_val = f"${val_curr:.1f}B" if val_curr < 10000 else f"${val_curr/1000:.1f}T"
-            if asset_type == 'Asset': display_val = f"~${BASE_CAPS.get(col,0)/1000:.1f}T"
+            # 初始化默认值 (防止数据缺失导致报错)
+            val_curr = 0
+            val_prev = 0
+            pct = 0
+            size = 0.1 # 默认给一个极小值，保证存在
+            display_val = "N/A"
 
+            # 尝试获取真实数据
+            if col in df.columns:
+                val_curr = row_data[col]
+                val_prev = val_prev_row[col]
+                
+                # 处理 NaN
+                if pd.isna(val_curr): val_curr = 0
+                if pd.isna(val_prev): val_prev = 0
+                
+                # 计算百分比
+                if val_prev != 0:
+                    pct = (val_curr - val_prev) / val_prev * 100
+                
+                # 计算 Size
+                if "真实" in mode:
+                    if asset_type == 'Macro': size = abs(val_curr)
+                    else: size = BASE_CAPS.get(col, 100)
+                else:
+                    size = abs(pct) + 0.1 # 保证不为0
+                
+                # 格式化文本
+                display_val = f"${val_curr:.1f}B" if val_curr < 10000 else f"${val_curr/1000:.1f}T"
+                if asset_type == 'Asset': display_val = f"~${BASE_CAPS.get(col,0)/1000:.1f}T"
+
+            # 关键：无论有没有数据，都append这一行！
             frames.append({
                 "Date": date_str,
-                "Root": "全球资金池", # <--- 关键修复：把Root直接写进数据里
+                "Root": "全球资金池", # 根节点
                 "Name": name,
                 "Category": cat,
-                "Size": size,
+                "Size": max(size, 0.001), # 双重保险，防止0导致消失
                 "Color_Pct": pct,
                 "Display": display_val
             })
@@ -156,18 +172,16 @@ if not df.empty and 'Net_Liquidity' in df.columns:
     df_anim = generate_animation_frames(df, view_mode)
     
     if not df_anim.empty:
-        # 修复后的 Plotly 调用
+        # 绘制图表
         fig = px.treemap(
             df_anim,
-            # 关键修复：用真实的 'Root' 列替代 px.Constant
             path=['Root', 'Category', 'Name'], 
             values='Size',
             color='Color_Pct',
             color_continuous_scale=['#FF4B4B', '#262730', '#09AB3B'],
             range_color=[-5, 5],
             hover_data=['Display', 'Color_Pct'],
-            animation_frame="Date" 
-            # 移除 animation_group="Name"，这在 treemap 里通常会导致问题
+            animation_frame="Date" # 只要数据整齐，这个参数就很安全
         )
         
         fig.update_traces(
@@ -175,19 +189,17 @@ if not df.empty and 'Net_Liquidity' in df.columns:
             textfont=dict(size=14)
         )
         
-        # 优化滑块和播放器
         fig.update_layout(
             height=700,
             margin=dict(t=0, l=0, r=0, b=0),
             coloraxis_colorbar=dict(title="30天涨跌%"),
-            sliders=[dict(currentvalue={"prefix": "📅 历史回放: "}, pad={"t": 50})],
-            updatemenus=[dict(type="buttons", showactive=False, x=0.1, y=-0.1)]
+            sliders=[dict(currentvalue={"prefix": "📅 历史回放: "}, pad={"t": 50})]
         )
         
         st.plotly_chart(fig, use_container_width=True)
-        st.success(f"🎥 时光机加载完毕！请点击左下角 ▶️ 播放键，见证资金流转的历史。")
+        st.success("🎥 时光机就绪！所有数据帧已强制对齐。")
         
     else:
-        st.warning("数据初始化中，请稍等...")
+        st.warning("数据初始化中...")
 else:
-    st.info("⏳ 正在建立数据连接...")
+    st.info("⏳ 正在拉取数据...")
