@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="宏观全景雷达", layout="wide")
 
 st.title("宏观全景雷达 (Macro Panoramic Radar)")
-st.caption("双维监控：上图看【相对强度/估值】，下表看【均线趋势结构】")
+st.caption("双维监控：上图看【相对强度/估值】，下表看【全周期趋势结构】(含牛熊分界)")
 
 # --- 1. 定义资产池 ---
 ASSET_GROUPS = {
@@ -60,7 +60,7 @@ def get_data():
     all_tickers = list(set(all_tickers))
     
     end_date = datetime.now()
-    # 必须拉取足够长的数据以计算 EMA120
+    # 必须拉取足够长的数据以计算 EMA200
     start_date = end_date - timedelta(days=730) 
     
     try:
@@ -70,7 +70,7 @@ def get_data():
 
 raw_data = get_data()
 
-# --- 3. 计算逻辑 (深度趋势解析) ---
+# --- 3. 计算逻辑 (深度趋势解析 + L/VL) ---
 def calculate_metrics():
     metrics = []
     
@@ -93,7 +93,7 @@ def calculate_metrics():
                 else:
                     df_t = raw_data['Close'].dropna()
 
-                if len(df_t) < 200: continue
+                if len(df_t) < 250: continue # 提高门槛以计算 EMA200
                 
                 curr = df_t.iloc[-1]
                 
@@ -106,10 +106,11 @@ def calculate_metrics():
                 rel_mom20 = abs_mom20 - spy_mom20
                 
                 # --- B. 深度趋势指标 (EMA系统) ---
-                # 计算 EMA 20, 60, 120
+                # 计算 EMA 20, 60, 120, 200 (新增)
                 ema20 = df_t.ewm(span=20, adjust=False).mean().iloc[-1]
                 ema60 = df_t.ewm(span=60, adjust=False).mean().iloc[-1]
                 ema120 = df_t.ewm(span=120, adjust=False).mean().iloc[-1]
+                ema200 = df_t.ewm(span=200, adjust=False).mean().iloc[-1] # 新增超长均线
                 
                 # 计算乖离率 (Bias)
                 # C/S: Close vs Short (20)
@@ -118,17 +119,23 @@ def calculate_metrics():
                 s_m = (ema20 - ema60) / ema60 * 100
                 # M/L: Medium (60) vs Long (120)
                 m_l = (ema60 - ema120) / ema120 * 100
+                # L/VL: Long (120) vs Very Long (200) <--- 新增指标
+                l_vl = (ema120 - ema200) / ema200 * 100
                 
                 # 定义趋势结构 (Structure)
+                # 逻辑升级：加入 VL (200日) 的判断
                 structure = "震荡/纠缠"
-                if c_s > 0 and s_m > 0 and m_l > 0:
-                    structure = "多头排列 (强)"
-                elif c_s < 0 and s_m < 0 and m_l < 0:
-                    structure = "空头排列 (弱)"
-                elif c_s < 0 and s_m > 0 and m_l > 0:
-                    structure = "多头回调 (买点?)"
-                elif c_s > 0 and s_m < 0 and m_l < 0:
-                    structure = "空头反弹 (卖点?)"
+                
+                if c_s > 0 and s_m > 0 and m_l > 0 and l_vl > 0:
+                    structure = "完美多头 (主升浪)"
+                elif c_s < 0 and s_m < 0 and m_l < 0 and l_vl < 0:
+                    structure = "完美空头 (主跌浪)"
+                elif l_vl > 0:
+                    if c_s < 0: structure = "牛市回调 (多头排列)"
+                    else: structure = "长期看涨"
+                elif l_vl < 0:
+                    if c_s > 0: structure = "熊市反弹 (空头排列)"
+                    else: structure = "长期看跌"
                 
                 metrics.append({
                     "代码": ticker, 
@@ -140,6 +147,7 @@ def calculate_metrics():
                     "C/S": round(c_s, 2),
                     "S/M": round(s_m, 2),
                     "M/L": round(m_l, 2),
+                    "L/VL": round(l_vl, 2), # 新增列
                     "现价": round(curr, 2)
                 })
             except: continue
@@ -163,21 +171,24 @@ if not raw_data.empty:
             st.markdown("**图例说明：**")
             st.markdown("横轴：估值 (左便宜，右贵)")
             st.markdown("纵轴：相对强度 (上强，下弱)")
-            st.markdown("表格指标：C/S(收盘/短均), S/M(短/中), M/L(中/长)")
+            st.markdown("**趋势扫描表指标：**")
+            st.markdown("C/S: 收盘价 vs 20日线 (短期)")
+            st.markdown("S/M: 20日线 vs 60日线 (中期)")
+            st.markdown("M/L: 60日线 vs 120日线 (长期)")
+            st.markdown("L/VL: 120日线 vs 200日线 (牛熊)")
 
         df_plot = df_metrics[df_metrics['组别'].isin(selected_groups)]
         
-        # --- PART 1: 宏观雷达图 (悬浮窗增强) ---
+        # --- PART 1: 宏观雷达图 ---
         fig = px.scatter(
             df_plot, 
             x="Z-Score", 
             y="相对强度", 
             color="相对强度",
             text="名称",
-            # 关键：把趋势结构加进悬浮窗
             hover_data={
                 "代码": True,
-                "趋势结构": True, # 这里！
+                "趋势结构": True,
                 "Z-Score": ":.2f",
                 "相对强度": ":.2f",
                 "名称": False,
@@ -187,13 +198,10 @@ if not raw_data.empty:
             range_color=[-10, 10]
         )
         
-        # 辅助线
         fig.add_hline(y=0, line_dash="dash", line_color="#FFFFFF", opacity=0.5, line_width=1)
         fig.add_vline(x=0, line_dash="dash", line_color="#FFFFFF", opacity=0.3, line_width=1)
-        
         fig.update_traces(textposition='top center', marker=dict(size=8, line=dict(width=0), opacity=0.9))
         
-        # 象限标注
         if not df_plot.empty:
             max_y = max(df_plot['相对强度'].max(), 5)
             min_y = min(df_plot['相对强度'].min(), -5)
@@ -220,30 +228,30 @@ if not raw_data.empty:
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # --- PART 2: 趋势扫描表 (Trend Scanner) ---
-        st.markdown("### 趋势扫描 (Trend Scanner)")
-        st.caption("逻辑来源：收盘价(C) vs EMA20(S) vs EMA60(M) vs EMA120(L) | 正值代表上方，负值代表下方")
+        # --- PART 2: 趋势扫描表 (4级均线版) ---
+        st.markdown("### 趋势扫描 (Trend Scanner - 4级均线)")
+        st.caption("逻辑来源：C(价) > S(20) > M(60) > L(120) > VL(200) = 完美多头")
         
-        # 准备表格数据
-        df_table = df_plot[["代码", "名称", "组别", "趋势结构", "C/S", "S/M", "M/L", "相对强度", "Z-Score"]].copy()
+        df_table = df_plot[["代码", "名称", "组别", "趋势结构", "C/S", "S/M", "M/L", "L/VL", "相对强度", "Z-Score"]].copy()
         
-        # 颜色映射函数
         def color_trend(val):
-            color = '#E74C3C' if val < 0 else '#2ECC71' # 红跌绿涨
+            color = '#E74C3C' if val < 0 else '#2ECC71' 
             return f'color: {color}'
         
         def color_structure(val):
-            if "多头排列" in val: return 'color: #2ECC71; font-weight: bold'
-            if "空头排列" in val: return 'color: #E74C3C; font-weight: bold'
-            if "多头回调" in val: return 'color: #F1C40F; font-weight: bold' # 黄色
+            if "完美多头" in val: return 'color: #2ECC71; font-weight: bold; border: 1px solid #2ECC71'
+            if "完美空头" in val: return 'color: #E74C3C; font-weight: bold'
+            if "牛市回调" in val: return 'color: #F1C40F; font-weight: bold'
             return 'color: #ddd'
 
-        # 展示方式切换
         view_mode = st.radio("表格视图", ["汇总模式", "分组模式"], horizontal=True)
+        
+        # 应用样式
+        style_cols = ["C/S", "S/M", "M/L", "L/VL", "相对强度"]
         
         if view_mode == "汇总模式":
             st.dataframe(
-                df_table.sort_values("相对强度", ascending=False).style.applymap(color_trend, subset=["C/S", "S/M", "M/L", "相对强度"]).applymap(color_structure, subset=["趋势结构"]),
+                df_table.sort_values("相对强度", ascending=False).style.applymap(color_trend, subset=style_cols).applymap(color_structure, subset=["趋势结构"]),
                 use_container_width=True,
                 hide_index=True
             )
@@ -253,7 +261,7 @@ if not raw_data.empty:
                 st.subheader(group)
                 df_sub = df_table[df_table['组别'] == group].sort_values("相对强度", ascending=False)
                 st.dataframe(
-                    df_sub.style.applymap(color_trend, subset=["C/S", "S/M", "M/L", "相对强度"]).applymap(color_structure, subset=["趋势结构"]),
+                    df_sub.style.applymap(color_trend, subset=style_cols).applymap(color_structure, subset=["趋势结构"]),
                     use_container_width=True,
                     hide_index=True
                 )
@@ -261,4 +269,4 @@ if not raw_data.empty:
         st.warning("暂无数据")
 
 else:
-    st.info("⏳ 正在计算 EMA 趋势结构 (需 730 天数据)...")
+    st.info("⏳ 正在计算 200日均线数据 (需 730 天历史)...")
