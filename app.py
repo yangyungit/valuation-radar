@@ -1,270 +1,187 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import pytz
 
-# --- 1. 基础配置 ---
-st.set_page_config(page_title="宏观雷达 (合成指数版)", layout="wide")
+# --- 页面配置 ---
+st.set_page_config(page_title="宏观雷达 Pro", layout="wide", page_icon="🔭")
 
-# --- 2. 定义资产池与合成组合 ---
-# 单一资产 (直接下载)
-SINGLE_ASSETS = {
-    # 全球宏观
-    "标普500": "SPY",
-    "纳指100": "QQQ",
-    "罗素小盘": "IWM",
-    "中概互联": "KWEB",
-    "中国大盘": "FXI",
-    "日本股市": "EWJ",
-    "欧洲股市": "VGK",
-    "越南股市": "VNM",
-    "印度股市": "INDA",
+st.title("🔭 宏观雷达 (Macro Radar Pro)")
+st.caption("全市场扫描：基于 **Z-Score (估值位置)** 与 **Momentum (动量趋势)** 的四象限分析")
 
-    # 核心板块
-    "半导体": "SMH",
-    "金融": "XLF",
-    "能源": "XLE",
-    "医疗": "XLV",
-    "工业": "XLI",
-    "军工": "ITA",
-    "农业": "DBA",
-    
-    # 资产 (已移除以太坊，新增人民币，移除Emoji)
-    "比特币": "BTC-USD",
-    "黄金": "GLD",
-    "白银": "SLV",
-    "铜矿": "COPX",
-    "原油": "USO",
-    "天然气": "UNG",
-    "20年美债": "TLT",
-    "美元指数": "UUP",
-    "美元/人民币": "CNY=X",
-    "日元": "FXY"
+# --- 1. 定义资产池 (The 3 Tables Strategy) ---
+ASSET_POOLS = {
+    "🌍 全球大类 (Global Macro)": {
+        "SPY": "美股大盘", "QQQ": "纳指100", "DIA": "道琼斯", "IWM": "罗素小盘",
+        "TLT": "20年美债", "IEF": "10年美债", "SHy": "短债现金",
+        "GLD": "黄金", "SLV": "白银", "CPER": "铜", "USO": "原油", "UNG": "天然气",
+        "UUP": "美元指数", "FXE": "欧元", "FXY": "日元",
+        "BTC-USD": "比特币", "ETH-USD": "以太坊"
+    },
+    "🏭 美股板块 (US Sectors)": {
+        "XLK": "科技", "XLF": "金融", "XLV": "医疗", 
+        "XLY": "可选消费", "XLP": "必选消费", "XLE": "能源", 
+        "XLI": "工业", "XLB": "材料", "XLU": "公用事业", 
+        "XLRE": "地产", "XLC": "通讯"
+    },
+    "🚀 风格与主题 (Factors & Themes)": {
+        "SMH": "半导体", "IGV": "软件SaaS", "XBI": "生物科技", "ITA": "军工国防",
+        "KWEB": "中国互联网", "MCHI": "中国大盘", "EWJ": "日本股市", "VGK": "欧洲股市", "INDA": "印度股市",
+        "MTUM": "动量因子", "USMV": "低波红利", "VLUE": "价值因子", "ARKK": "木头姐创新"
+    }
 }
 
-# 合成组合 (Basket): 后台下载成分股 -> 合成等权指数
-CUSTOM_BASKETS = {
-    # 移除Emoji，改名"精英"为"龙头"
-    "科技七姐妹": ["NVDA", "AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA"],
-    "必选消费龙头": ["WMT", "COST", "KO", "PG", "PEP"], 
-    "垃圾债": ["HYG", "JNK"] 
-}
-
-# --- 3. 核心引擎 (支持合成指数) ---
-@st.cache_data(ttl=3600*12) 
-def get_market_data(single_dict, basket_dict):
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365*2.5) # 2.5年数据保证计算精度
-    
-    display_years = 1 
-    rolling_window = 252 
-
-    status_text = st.empty()
-    status_text.text(f"📥 正在构建合成指数与宏观数据...")
-
-    # 1. 收集所有需要下载的 Ticker (去重)
-    all_tickers = list(single_dict.values())
-    for tickers in basket_dict.values():
-        all_tickers.extend(tickers)
+# --- 2. 数据引擎 ---
+@st.cache_data(ttl=3600*4)
+def get_bulk_data():
+    # 提取所有去重代码
+    all_tickers = []
+    for pool in ASSET_POOLS.values():
+        all_tickers.extend(list(pool.keys()))
     all_tickers = list(set(all_tickers))
-
+    
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=400) # 拉取一年多数据用于计算Z-Score
+    
     try:
         # 批量下载
-        data = yf.download(all_tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)
-        raw_close = data['Close']
-        raw_volume = data['Volume']
-    except:
+        data = yf.download(all_tickers, start=start_date, end=end_date, progress=False, group_by='ticker')
+        return data
+    except Exception as e:
+        st.error(f"数据拉取失败: {e}")
         return pd.DataFrame()
 
-    status_text.text("⚡ 正在合成 '七姐妹' 与 '消费精英' 指数...")
+raw_data = get_bulk_data()
 
-    # --- 数据处理与合成逻辑 ---
-    processed_dfs = []
+# --- 3. 指标计算核心 (Math Engine) ---
+def calculate_metrics(pool_dict):
+    metrics_list = []
     
-    # A. 处理单一资产
-    check_list = list(SINGLE_ASSETS.items())
-    # B. 处理合成资产 (这是关键一步)
-    #    我们在内存中创建一个"虚拟"的价格序列
-    for name, components in CUSTOM_BASKETS.items():
-        # 获取成分股的日收益率
-        valid_components = [t for t in components if t in raw_close.columns]
-        if not valid_components: continue
-        
-        # 计算等权重收益率 (Equal Weighted Return)
-        # 每天的涨跌幅 = 所有成分股涨跌幅的平均值
-        basket_returns = raw_close[valid_components].pct_change().mean(axis=1)
-        
-        # 重新构建净值曲线 (假设初始值为100)
-        # (1 + r1) * (1 + r2) ...
-        synthetic_price = (1 + basket_returns).cumprod() * 100
-        
-        # 暂时把合成的价格塞进 raw_close (为了复用下面的逻辑，虽然有点hack但很高效)
-        # 注意：这里我们不需要Volume，因为合成指数的Volume很难定义，我们暂设为0或平均
-        raw_close[name] = synthetic_price
-        raw_volume[name] = raw_volume[valid_components].mean(axis=1) # 简单的平均量
-        
-        # 把合成的名字加入待处理列表
-        check_list.append((name, name))
-
-    # --- 统一计算 Z-Score ---
-    for name, ticker in check_list:
+    for ticker, name in pool_dict.items():
         try:
-            # 如果是合成的，ticker就是name；如果是原始的，ticker就是代码
-            series_price = raw_close[ticker].dropna()
-            series_vol = raw_volume[ticker].dropna()
+            # 处理多层级索引
+            df_t = raw_data[ticker].copy()
+            if df_t.empty: continue
             
-            if len(series_price) < rolling_window + 20: continue
-
-            price_weekly = series_price.resample('W-FRI').last()
+            # 清洗
+            df_t = df_t['Close'].dropna()
+            if len(df_t) < 200: continue # 数据太短跳过
             
-            # 只有这里需要注意：合成指数的Volume没有太大意义，我们主要看价格位置
-            vol_weekly = series_vol.resample('W-FRI').mean()
+            curr_price = df_t.iloc[-1]
             
-            target_start_date = end_date - timedelta(days=365 * display_years)
-            display_dates = price_weekly[price_weekly.index >= target_start_date].index
+            # A. Z-Score (估值位置)
+            # 逻辑：当前价格距离过去1年均值的偏离程度（以标准差为单位）
+            # Z = (Price - MA250) / STD250
+            window = 250
+            ma = df_t.rolling(window).mean().iloc[-1]
+            std = df_t.rolling(window).std().iloc[-1]
+            z_score = (curr_price - ma) / std if std != 0 else 0
             
-            for date in display_dates:
-                # Rolling Window
-                window_price = series_price.loc[:date].tail(rolling_window)
-                window_vol = series_vol.loc[:date].tail(rolling_window)
-                
-                if len(window_price) < rolling_window * 0.9: continue
-                
-                p_mean = window_price.mean()
-                p_std = window_price.std()
-                
-                if p_std == 0: continue
+            # B. Momentum (动量)
+            # 逻辑：过去 20 天的涨跌幅 (反映短期资金流向)
+            mom_20d = (curr_price / df_t.iloc[-21] - 1) * 100
+            
+            # C. RSI (相对强弱 - 辅助)
+            delta = df_t.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs)).iloc[-1]
 
-                # Z-Score
-                price_val = price_weekly.loc[date]
-                z_score = (price_val - p_mean) / p_std
-                
-                # Momentum
-                lookback_date = date - timedelta(weeks=4)
-                try:
-                    idx = series_price.index.searchsorted(lookback_date)
-                    if idx < len(series_price) and idx >= 0:
-                        price_prev = series_price.iloc[idx]
-                        momentum = ((price_val - price_prev) / price_prev) * 100 if price_prev > 0 else 0
-                    else: momentum = 0
-                except: momentum = 0
-                
-                # Vol Z-Score
-                if ticker in CUSTOM_BASKETS:
-                    vol_z = 0 # 合成指数暂不显示量能异动，避免数据失真
-                else:
-                    v_mean = window_vol.mean()
-                    v_std = window_vol.std()
-                    vol_val = vol_weekly.loc[date]
-                    vol_z = (vol_val - v_mean) / v_std if v_std > 0 else 0
-                
-                # 获取真实代码用于展示 (如果是合成的，展示成分股数量)
-                display_ticker = ticker if ticker not in CUSTOM_BASKETS else f"Basket({len(CUSTOM_BASKETS[ticker])})"
+            metrics_list.append({
+                "代码": ticker,
+                "名称": name,
+                "现价": curr_price,
+                "Z-Score (估值)": round(z_score, 2),
+                "Momentum (20日)": round(mom_20d, 2),
+                "RSI": round(rsi, 0)
+            })
+            
+        except Exception:
+            continue
+            
+    return pd.DataFrame(metrics_list)
 
-                processed_dfs.append({
-                    "Date": date.strftime('%Y-%m-%d'), 
-                    "Name": name,
-                    "Ticker": display_ticker, 
-                    "Z-Score": round(z_score, 2),
-                    "Momentum": round(momentum, 2),
-                    "Vol_Z": round(vol_z, 2),
-                    "Price": round(price_val, 2)
-                })
-        except: continue
+# --- 4. 绘图引擎 (Plot Engine) ---
+def plot_radar(df_plot):
+    if df_plot.empty:
+        st.warning("暂无数据")
+        return
 
-    status_text.empty()
-    full_df = pd.DataFrame(processed_dfs)
-    if not full_df.empty:
-        full_df = full_df.sort_values(by="Date")
-    return full_df
-
-# --- 4. 页面渲染 ---
-st.title(f"🔭 宏观雷达 (精英合成版)")
-
-df_anim = get_market_data(SINGLE_ASSETS, CUSTOM_BASKETS)
-
-if not df_anim.empty:
-    
-    all_dates = sorted(df_anim['Date'].unique())
-    range_x = [-4.0, 4.0]
-    range_y = [-40, 50] 
-
-    # 气泡图
+    # 定义象限
     fig = px.scatter(
-        df_anim, 
-        x="Z-Score", y="Momentum", 
-        animation_frame="Date", animation_group="Name", 
-        text="Name", hover_name="Name",
-        hover_data=["Ticker", "Price", "Vol_Z"], 
-        color="Momentum", 
-        range_x=range_x, range_y=range_y, 
-        color_continuous_scale="RdYlGn", range_color=[-20, 40],
-        title=""
-    )
-
-    fig.update_traces(
-        cliponaxis=False, 
-        textposition='top center', 
-        marker=dict(size=14, line=dict(width=1, color='black'))
+        df_plot,
+        x="Z-Score (估值)",
+        y="Momentum (20日)",
+        text="名称",
+        color="Momentum (20日)",
+        color_continuous_scale="RdYlGn", # 红涨绿跌
+        size_max=60,
+        hover_data=["代码", "RSI", "现价"]
     )
     
-    fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
-    fig.add_vline(x=0, line_width=1, line_dash="dash", line_color="gray")
-
-    fig.add_annotation(x=0.95, y=0.95, xref="paper", yref="paper", text="🔥 强势/拥挤", showarrow=False, font=dict(color="red"))
-    fig.add_annotation(x=0.05, y=0.95, xref="paper", yref="paper", text="💎 反转/启动", showarrow=False, font=dict(color="#00FF00"))
-    fig.add_annotation(x=0.05, y=0.05, xref="paper", yref="paper", text="🧊 弱势/冷宫", showarrow=False, font=dict(color="gray"))
-    fig.add_annotation(x=0.95, y=0.05, xref="paper", yref="paper", text="⚠️ 补跌/崩盘", showarrow=False, font=dict(color="orange"))
-
-    settings_play = dict(frame=dict(duration=400, redraw=True), fromcurrent=True, transition=dict(duration=100))
-    settings_rewind = dict(frame=dict(duration=100, redraw=True), fromcurrent=True, transition=dict(duration=0))
-
-    fig.layout.updatemenus = [dict(
-        type="buttons", showactive=False, direction="left", x=0.0, y=-0.15,
-        buttons=[
-            dict(label="⏪ 倒放", method="animate", args=[all_dates[::-1], settings_rewind]),
-            dict(label="▶️ 正放", method="animate", args=[None, settings_play]),
-            dict(label="⏸️ 暂停", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])
-        ]
-    )]
-
-    fig.layout.sliders[0].active = len(all_dates) - 1
-    fig.layout.sliders[0].currentvalue.prefix = "" 
-    fig.layout.sliders[0].currentvalue.font.size = 20
-    fig.layout.sliders[0].pad = {"t": 50} 
+    # 绘制十字坐标系
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
     
+    # 标注象限含义
+    fig.add_annotation(x=2, y=10, text="🔥 强势/拥挤", showarrow=False, font=dict(color="red"))
+    fig.add_annotation(x=-2, y=-10, text="❄️ 弱势/冷宫", showarrow=False, font=dict(color="blue"))
+    fig.add_annotation(x=-2, y=10, text="🚀 反转/启动", showarrow=False, font=dict(color="green"))
+    fig.add_annotation(x=2, y=-10, text="⚠️ 补跌/崩盘", showarrow=False, font=dict(color="orange"))
+
+    fig.update_traces(textposition='top center', marker=dict(size=12, line=dict(width=1, color='DarkSlateGrey')))
     fig.update_layout(
-        height=750, template="plotly_dark",
-        margin=dict(l=40, r=40, t=20, b=100),
-        xaxis=dict(visible=True, showticklabels=True, title="<-- 便宜 (低 Z-Score)  |  昂贵 (高 Z-Score) -->"),
-        yaxis=dict(title="<-- 资金流出  |  资金流入 -->")
+        height=600,
+        xaxis_title="<-- 便宜 (低 Z-Score) | 昂贵 (高 Z-Score) -->",
+        yaxis_title="<-- 资金流出 | 资金流入 (Momentum) -->",
+        plot_bgcolor="#1e1e1e",
     )
-
-    st.plotly_chart(fig, width='stretch')
-
-    with st.expander("⚠️ 合成指数说明 (Methodology)", expanded=False):
-        st.markdown("""
-        * **科技七姐妹:** 等权重合成 (NVDA, AAPL, MSFT, GOOG, AMZN, META, TSLA)。代表美股最强进攻力量。
-        * **必选消费:** 等权重合成 (WMT, COST, KO, PG, PEP)。剔除了板块中的垃圾股，只看最强防御龙头。
-        * **原理:** 我们在后台下载了这些个股的原始数据，实时计算它们的等权净值曲线，再将其放入宏观雷达进行对比。
-        """)
-
-    st.markdown("### 📊 最新数据快照")
-    latest_date = df_anim['Date'].iloc[-1]
-    df_latest = df_anim[df_anim['Date'] == latest_date]
     
-    display_cols = ['Name', 'Ticker', 'Z-Score', 'Momentum', 'Vol_Z', 'Price']
+    st.plotly_chart(fig, use_container_width=True)
+
+# --- 5. 主界面逻辑 ---
+
+if not raw_data.empty:
     
-    st.dataframe(
-        df_latest[display_cols]
-        .sort_values(by="Z-Score", ascending=False)
-        .style
-        .background_gradient(subset=['Momentum'], cmap='RdYlGn', vmin=-20, vmax=40) 
-        .background_gradient(subset=['Vol_Z'], cmap='Blues', vmin=0, vmax=3),
-        width='stretch'
-    )
+    # 创建三个 Tab
+    tab1, tab2, tab3 = st.tabs(list(ASSET_POOLS.keys()))
+    
+    # --- Tab 1: 全球大类 ---
+    with tab1:
+        st.markdown("##### 🌍 全球资产定风向")
+        st.caption("这是宏观交易员的仪表盘。用于判断**通胀预期**（看铜油金）、**流动性**（看美债美元）和**风险偏好**（看BTC纳指）。")
+        df_macro = calculate_metrics(ASSET_POOLS["🌍 全球大类 (Global Macro)"])
+        plot_radar(df_macro)
+        with st.expander("查看详细数据表"):
+            st.dataframe(df_macro.sort_values("Momentum (20日)", ascending=False), use_container_width=True)
+
+    # --- Tab 2: 美股板块 ---
+    with tab2:
+        st.markdown("##### 🏭 行业轮动看资金")
+        st.caption("这里展示存量资金在去哪。**防御板块**（公用/必选消费）强说明避险；**进攻板块**（科技/可选消费）强说明贪婪。")
+        df_sector = calculate_metrics(ASSET_POOLS["🏭 美股板块 (US Sectors)"])
+        plot_radar(df_sector)
+        
+        # 智能解读
+        if not df_sector.empty:
+            top_sector = df_sector.sort_values("Momentum (20日)", ascending=False).iloc[0]['名称']
+            bot_sector = df_sector.sort_values("Momentum (20日)", ascending=True).iloc[0]['名称']
+            st.info(f"💡 **当前盘面：** 资金正在猛攻 **{top_sector}**，同时抛弃 **{bot_sector}**。")
+            
+        with st.expander("查看详细数据表"):
+            st.dataframe(df_sector.sort_values("Momentum (20日)", ascending=False), use_container_width=True)
+
+    # --- Tab 3: 风格与主题 ---
+    with tab3:
+        st.markdown("##### 🚀 寻找 Alpha (细分赛道)")
+        st.caption("这里是捕捉超额收益的地方。包含了**半导体、中概股、日股**以及**价值/成长因子**的对比。")
+        df_theme = calculate_metrics(ASSET_POOLS["🚀 风格与主题 (Factors & Themes)"])
+        plot_radar(df_theme)
+        with st.expander("查看详细数据表"):
+            st.dataframe(df_theme.sort_values("Momentum (20日)", ascending=False), use_container_width=True)
 
 else:
-    st.info("正在合成精英指数并获取数据...")
+    st.info("⏳ 正在初始化全球数据引擎，请稍候...")
