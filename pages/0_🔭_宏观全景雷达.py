@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="宏观全景雷达", layout="wide")
 
 st.title("宏观全景雷达 (Macro Panoramic Radar)")
-st.caption("全市场扫描：Z-Score (估值) vs Relative Strength (相对强度) | 基准：SPY (美股大盘)")
+st.caption("双维监控：上图看【相对强度/估值】，下表看【均线趋势结构】")
 
-# --- 1. 定义终极资产池 ---
+# --- 1. 定义资产池 ---
 ASSET_GROUPS = {
     "A: 全球国别 (Global)": {
         "SPY": "美股", "QQQ": "纳指", "IWM": "罗素小盘", 
@@ -60,6 +60,7 @@ def get_data():
     all_tickers = list(set(all_tickers))
     
     end_date = datetime.now()
+    # 必须拉取足够长的数据以计算 EMA120
     start_date = end_date - timedelta(days=730) 
     
     try:
@@ -69,23 +70,19 @@ def get_data():
 
 raw_data = get_data()
 
-# --- 3. 计算逻辑 (引入相对强度 REL) ---
+# --- 3. 计算逻辑 (深度趋势解析) ---
 def calculate_metrics():
     metrics = []
     
-    # 0. 先计算基准 (SPY) 的动量
+    # 0. 计算基准 SPY
     try:
         if isinstance(raw_data.columns, pd.MultiIndex):
             spy_df = raw_data['SPY']['Close'].dropna()
         else:
-            spy_df = raw_data['Close'].dropna() # Fallback case
-            
-        spy_curr = spy_df.iloc[-1]
-        spy_prev_20 = spy_df.iloc[-21]
-        # 基准动量
-        spy_mom20 = (spy_curr / spy_prev_20 - 1) * 100
+            spy_df = raw_data['Close'].dropna()
+        spy_mom20 = (spy_df.iloc[-1] / spy_df.iloc[-21] - 1) * 100
     except:
-        spy_mom20 = 0 # 如果获取不到SPY，则退化为绝对动量
+        spy_mom20 = 0
     
     for group_name, tickers in ASSET_GROUPS.items():
         for ticker, name in tickers.items():
@@ -96,33 +93,54 @@ def calculate_metrics():
                 else:
                     df_t = raw_data['Close'].dropna()
 
-                if len(df_t) < 180: continue
+                if len(df_t) < 200: continue
                 
                 curr = df_t.iloc[-1]
                 
-                # Z-Score (1年均值回归)
+                # --- A. 基础雷达指标 ---
                 ma250 = df_t.rolling(250, min_periods=200).mean().iloc[-1]
                 std250 = df_t.rolling(250, min_periods=200).std().iloc[-1]
+                z_score = (curr - ma250) / std250 if std250 != 0 else 0
                 
-                if pd.isna(ma250) or pd.isna(std250) or std250 == 0:
-                    z_score = 0
-                else:
-                    z_score = (curr - ma250) / std250
-                
-                # Momentum (20日)
                 abs_mom20 = (curr / df_t.iloc[-21] - 1) * 100
-                
-                # === 核心修改：计算相对强度 (REL) ===
-                # REL = 个股涨幅 - SPY涨幅
                 rel_mom20 = abs_mom20 - spy_mom20
+                
+                # --- B. 深度趋势指标 (EMA系统) ---
+                # 计算 EMA 20, 60, 120
+                ema20 = df_t.ewm(span=20, adjust=False).mean().iloc[-1]
+                ema60 = df_t.ewm(span=60, adjust=False).mean().iloc[-1]
+                ema120 = df_t.ewm(span=120, adjust=False).mean().iloc[-1]
+                
+                # 计算乖离率 (Bias)
+                # C/S: Close vs Short (20)
+                c_s = (curr - ema20) / ema20 * 100
+                # S/M: Short (20) vs Medium (60)
+                s_m = (ema20 - ema60) / ema60 * 100
+                # M/L: Medium (60) vs Long (120)
+                m_l = (ema60 - ema120) / ema120 * 100
+                
+                # 定义趋势结构 (Structure)
+                structure = "震荡/纠缠"
+                if c_s > 0 and s_m > 0 and m_l > 0:
+                    structure = "多头排列 (强)"
+                elif c_s < 0 and s_m < 0 and m_l < 0:
+                    structure = "空头排列 (弱)"
+                elif c_s < 0 and s_m > 0 and m_l > 0:
+                    structure = "多头回调 (买点?)"
+                elif c_s > 0 and s_m < 0 and m_l < 0:
+                    structure = "空头反弹 (卖点?)"
                 
                 metrics.append({
                     "代码": ticker, 
                     "名称": name, 
                     "组别": group_name,
                     "Z-Score": round(z_score, 2), 
-                    "相对强度": round(rel_mom20, 2), # Y轴数据
-                    "绝对涨幅": round(abs_mom20, 2)   # 用于悬停显示
+                    "相对强度": round(rel_mom20, 2), 
+                    "趋势结构": structure,
+                    "C/S": round(c_s, 2),
+                    "S/M": round(s_m, 2),
+                    "M/L": round(m_l, 2),
+                    "现价": round(curr, 2)
                 })
             except: continue
             
@@ -136,36 +154,35 @@ if not raw_data.empty:
         # --- 侧边栏 ---
         with st.sidebar:
             st.header("资产筛选")
-            
-            # 显示当前基准状态
-            st.metric("基准 (SPY) 20日涨跌幅", f"{benchmark_mom:.2f}%")
-            if benchmark_mom < -2:
-                st.error("大盘弱势，寻找抗跌资产 (Y > 0)")
-            elif benchmark_mom > 2:
-                st.success("大盘强势，寻找领涨龙头 (Y > 0)")
+            st.metric("基准 (SPY) 20日涨跌", f"{benchmark_mom:.2f}%")
             
             all_groups = list(ASSET_GROUPS.keys())
-            default_selection = ["E: 固收阶梯 (Fixed Income)", "F: 聪明钱因子 (Factors)", "A: 全球国别 (Global)", "B: 大宗/货币 (Macro)"]
-            default_selection = [g for g in default_selection if g in all_groups]
-            
             selected_groups = st.multiselect("显示资产组别：", all_groups, default=all_groups)
             
             st.markdown("---")
-            st.markdown("**图例说明 (相对强度版)：**")
-            st.markdown("绿色 (Y > 0)：**跑赢** 美股大盘")
-            st.markdown("红色 (Y < 0)：**跑输** 美股大盘")
-            st.markdown("中心虚线：与大盘持平")
+            st.markdown("**图例说明：**")
+            st.markdown("横轴：估值 (左便宜，右贵)")
+            st.markdown("纵轴：相对强度 (上强，下弱)")
+            st.markdown("表格指标：C/S(收盘/短均), S/M(短/中), M/L(中/长)")
 
         df_plot = df_metrics[df_metrics['组别'].isin(selected_groups)]
         
-        # --- 核心绘图 ---
+        # --- PART 1: 宏观雷达图 (悬浮窗增强) ---
         fig = px.scatter(
             df_plot, 
             x="Z-Score", 
-            y="相对强度",  # Y轴改为相对强度
-            color="相对强度", # 颜色也由相对强度决定
+            y="相对强度", 
+            color="相对强度",
             text="名称",
-            hover_data=["代码", "绝对涨幅", "组别"],
+            # 关键：把趋势结构加进悬浮窗
+            hover_data={
+                "代码": True,
+                "趋势结构": True, # 这里！
+                "Z-Score": ":.2f",
+                "相对强度": ":.2f",
+                "名称": False,
+                "相对强度": False
+            },
             color_continuous_scale="RdYlGn", 
             range_color=[-10, 10]
         )
@@ -174,32 +191,23 @@ if not raw_data.empty:
         fig.add_hline(y=0, line_dash="dash", line_color="#FFFFFF", opacity=0.5, line_width=1)
         fig.add_vline(x=0, line_dash="dash", line_color="#FFFFFF", opacity=0.3, line_width=1)
         
-        # 极简小圆点
-        fig.update_traces(
-            textposition='top center', 
-            marker=dict(
-                size=8, 
-                line=dict(width=0), 
-                opacity=0.9
-            )
-        )
+        fig.update_traces(textposition='top center', marker=dict(size=8, line=dict(width=0), opacity=0.9))
         
-        # 象限标注 (根据相对强度逻辑修改)
+        # 象限标注
         if not df_plot.empty:
             max_y = max(df_plot['相对强度'].max(), 5)
             min_y = min(df_plot['相对强度'].min(), -5)
             max_x = max(df_plot['Z-Score'].max(), 2)
             min_x = min(df_plot['Z-Score'].min(), -2)
 
-            fig.add_annotation(x=max_x, y=max_y, text="领涨/拥挤 (跑赢SPY)", showarrow=False, font=dict(color="#E74C3C", size=12))
-            fig.add_annotation(x=min_x, y=min_y, text="滞涨/弱势 (跑输SPY)", showarrow=False, font=dict(color="#3498DB", size=12))
-            fig.add_annotation(x=min_x, y=max_y, text="抗跌/启动 (跑赢SPY)", showarrow=False, font=dict(color="#2ECC71", size=12))
-            fig.add_annotation(x=max_x, y=min_y, text="补跌/崩盘 (跑输SPY)", showarrow=False, font=dict(color="#E67E22", size=12))
+            fig.add_annotation(x=max_x, y=max_y, text="领涨/拥挤", showarrow=False, font=dict(color="#E74C3C", size=12))
+            fig.add_annotation(x=min_x, y=min_y, text="滞涨/弱势", showarrow=False, font=dict(color="#3498DB", size=12))
+            fig.add_annotation(x=min_x, y=max_y, text="抗跌/启动", showarrow=False, font=dict(color="#2ECC71", size=12))
+            fig.add_annotation(x=max_x, y=min_y, text="补跌/崩盘", showarrow=False, font=dict(color="#E67E22", size=12))
         
-        # 布局优化
         fig.update_layout(
-            height=800,
-            title=dict(text=f"相对强度雷达 (基准: SPY {benchmark_mom:.2f}%)", x=0.5),
+            height=700,
+            title=dict(text=f"宏观全景雷达 (基准: SPY {benchmark_mom:.2f}%)", x=0.5),
             xaxis_title="便宜 (低 Z-Score)  <───>  昂贵 (高 Z-Score)",
             yaxis_title="跑输大盘 (弱)  <───>  跑赢大盘 (强)",
             plot_bgcolor="#111111", 
@@ -212,38 +220,45 @@ if not raw_data.empty:
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # 底部数据表
-        st.markdown("### 资产深度透视 (Relative Strength)")
+        # --- PART 2: 趋势扫描表 (Trend Scanner) ---
+        st.markdown("### 趋势扫描 (Trend Scanner)")
+        st.caption("逻辑来源：收盘价(C) vs EMA20(S) vs EMA60(M) vs EMA120(L) | 正值代表上方，负值代表下方")
         
-        view_mode = st.radio("展示方式", ["全部汇总", "按组别分表"], horizontal=True)
+        # 准备表格数据
+        df_table = df_plot[["代码", "名称", "组别", "趋势结构", "C/S", "S/M", "M/L", "相对强度", "Z-Score"]].copy()
         
-        # 定义列配置
-        col_config = {
-            "相对强度": st.column_config.NumberColumn("相对强度 (vs SPY)", format="%.2f%%"),
-            "绝对涨幅": st.column_config.NumberColumn("绝对涨幅", format="%.2f%%"),
-            "Z-Score": st.column_config.ProgressColumn("Z-Score", min_value=-3, max_value=3, format="%.2f")
-        }
+        # 颜色映射函数
+        def color_trend(val):
+            color = '#E74C3C' if val < 0 else '#2ECC71' # 红跌绿涨
+            return f'color: {color}'
+        
+        def color_structure(val):
+            if "多头排列" in val: return 'color: #2ECC71; font-weight: bold'
+            if "空头排列" in val: return 'color: #E74C3C; font-weight: bold'
+            if "多头回调" in val: return 'color: #F1C40F; font-weight: bold' # 黄色
+            return 'color: #ddd'
 
-        if view_mode == "全部汇总":
+        # 展示方式切换
+        view_mode = st.radio("表格视图", ["汇总模式", "分组模式"], horizontal=True)
+        
+        if view_mode == "汇总模式":
             st.dataframe(
-                df_plot.sort_values("相对强度", ascending=False), 
+                df_table.sort_values("相对强度", ascending=False).style.applymap(color_trend, subset=["C/S", "S/M", "M/L", "相对强度"]).applymap(color_structure, subset=["趋势结构"]),
                 use_container_width=True,
-                column_config=col_config,
                 hide_index=True
             )
         else:
             sorted_groups = sorted(selected_groups, key=lambda x: x[0])
             for group in sorted_groups:
                 st.subheader(group)
-                df_group = df_plot[df_plot['组别'] == group]
+                df_sub = df_table[df_table['组别'] == group].sort_values("相对强度", ascending=False)
                 st.dataframe(
-                    df_group.sort_values("相对强度", ascending=False),
+                    df_sub.style.applymap(color_trend, subset=["C/S", "S/M", "M/L", "相对强度"]).applymap(color_structure, subset=["趋势结构"]),
                     use_container_width=True,
-                    column_config=col_config,
                     hide_index=True
                 )
     else:
-        st.warning("⚠️ 没有有效数据。请检查网络或数据源。")
+        st.warning("暂无数据")
 
 else:
-    st.info("⏳ 正在拉取 70+ 全球核心资产数据 (730天历史)，请稍候...")
+    st.info("⏳ 正在计算 EMA 趋势结构 (需 730 天数据)...")
