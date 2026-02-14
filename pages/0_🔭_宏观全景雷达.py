@@ -4,13 +4,13 @@ import yfinance as yf
 import plotly.express as px
 from datetime import datetime, timedelta
 
-# 页面配置：去掉了图标
+# 页面配置
 st.set_page_config(page_title="宏观全景雷达", layout="wide")
 
 st.title("宏观全景雷达 (Macro Panoramic Radar)")
 st.caption("全市场扫描：Z-Score (估值) vs Momentum (动量) | 颜色代表趋势强弱：红(弱) -> 黄(平) -> 绿(强)")
 
-# --- 1. 定义资产池 (纯文字版) ---
+# --- 1. 定义资产池 ---
 ASSET_GROUPS = {
     "A: 全球国别": {
         "SPY": "美股大盘", "QQQ": "纳指100", "IWM": "罗素小盘", 
@@ -114,27 +114,27 @@ if not raw_data.empty:
             range_color=[-15, 15] 
         )
         
-        # 辅助线 (极简灰色虚线)
-        fig.add_hline(y=0, line_dash="dash", line_color="#444", opacity=0.5, layer="below")
-        fig.add_vline(x=0, line_dash="dash", line_color="#444", opacity=0.5, layer="below")
+        # === 修复：增强十字辅助线可见度 ===
+        # 使用白色 (#FFFFFF) 配合 0.4 的透明度，确保在深色背景下清晰可见
+        fig.add_hline(y=0, line_dash="dash", line_color="#FFFFFF", opacity=0.4, line_width=1)
+        fig.add_vline(x=0, line_dash="dash", line_color="#FFFFFF", opacity=0.4, line_width=1)
         
         # 极简小圆点风格
         fig.update_traces(
             textposition='top center', 
             marker=dict(
-                size=8,          # 尺寸调小一点点，更精致
+                size=8, 
                 line=dict(width=0), 
                 opacity=0.9
             )
         )
         
-        # 象限标注 (纯文字)
+        # 象限标注
         max_y = df_plot['Momentum'].max()
         min_y = df_plot['Momentum'].min()
         max_x = df_plot['Z-Score'].max()
         min_x = df_plot['Z-Score'].min()
 
-        # 使用 fig.add_annotation 添加纯文字标签
         fig.add_annotation(x=max_x, y=max_y, text="强势/拥挤", showarrow=False, font=dict(color="#E74C3C", size=12))
         fig.add_annotation(x=min_x, y=min_y, text="弱势/超跌", showarrow=False, font=dict(color="#3498DB", size=12))
         
@@ -146,8 +146,9 @@ if not raw_data.empty:
             plot_bgcolor="#111111", 
             paper_bgcolor="#111111",
             font=dict(color="#ddd", size=12),
-            xaxis=dict(showgrid=True, gridcolor="#333"), 
-            yaxis=dict(showgrid=True, gridcolor="#333"),
+            # 网格线稍微调暗一点，不要抢了十字线的风头
+            xaxis=dict(showgrid=True, gridcolor="#222"), 
+            yaxis=dict(showgrid=True, gridcolor="#222"),
             coloraxis_colorbar=dict(title="20日动量%")
         )
         
