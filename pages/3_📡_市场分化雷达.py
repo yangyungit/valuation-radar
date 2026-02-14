@@ -5,163 +5,175 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="市场分化雷达", layout="wide")
+st.set_page_config(page_title="全能市场雷达", layout="wide", page_icon="📡")
 
-st.title("📡 市场分化雷达 (Market Differentiation Radar)")
-st.caption("核心监控：**共振** (大家都一样) vs **分化** (只有少数人赢) | 数据范围：**过去 10 年**")
+st.title("📡 全能市场雷达 (Market Radar Ultimate)")
+st.caption("双层监控体系：**【上层】**看市场结构 (分化/共振)，**【下层】**看资产轮动 (全球/板块/赛道)。")
 
-# --- 1. 数据引擎 ---
+# ==========================================
+# 1. 数据引擎 (Data Engine)
+# ==========================================
 @st.cache_data(ttl=3600*4)
-def get_radar_data():
+def get_all_radar_data():
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=3650) # 10年
+    start_date = end_date - timedelta(days=3650) # 10年数据
     
-    # A. 核心指数
-    indices = ['SPY', 'RSP']
+    # --- A. 结构监控池 (Breadth) ---
+    structure_tickers = ['SPY', 'RSP'] # 市值 vs 等权
     
-    # B. 11大板块
+    # --- B. 资产扫描池 (Scanner) ---
+    # 1. 全球宏观
+    global_assets = {
+        "SPY": "美股", "QQQ": "纳指", "IWM": "罗素", "TLT": "20年美债", 
+        "GLD": "黄金", "USO": "原油", "UUP": "美元", "BTC-USD": "比特币",
+        "EEM": "新兴市场", "VGK": "欧洲", "EWJ": "日本"
+    }
+    # 2. 美股板块
     sectors = {
-        'XLK': '科技', 'XLF': '金融', 'XLV': '医疗', 
-        'XLY': '可选消费', 'XLP': '必选消费', 'XLE': '能源', 
-        'XLI': '工业', 'XLB': '材料', 'XLU': '公用事业', 
-        'XLRE': '地产', 'XLC': '通讯'
+        'XLK': '科技', 'XLF': '金融', 'XLV': '医疗', 'XLY': '可选', 
+        'XLP': '必选', 'XLE': '能源', 'XLI': '工业', 'XLB': '材料', 
+        'XLU': '公用', 'XLRE': '地产', 'XLC': '通讯'
+    }
+    # 3. 风格赛道
+    themes = {
+        "SMH": "半导体", "IGV": "软件", "XBI": "生科", "ITA": "军工",
+        "KWEB": "中概互联", "ARKK": "创新", "MTUM": "动量", "USMV": "低波",
+        "COIN": "Coinbase", "NVDA": "英伟达" 
     }
     
-    tickers = indices + list(sectors.keys())
+    # 合并下载
+    all_tickers = structure_tickers + list(global_assets.keys()) + list(sectors.keys()) + list(themes.keys())
+    all_tickers = list(set(all_tickers)) # 去重
     
     try:
-        data = yf.download(tickers, start=start_date, end=end_date, progress=False)['Close']
-        data = data.ffill()
-        return data, sectors
+        data = yf.download(all_tickers, start=start_date, end=end_date, progress=False, group_by='ticker')
+        return data, global_assets, sectors, themes
     except Exception as e:
         st.error(f"数据拉取失败: {e}")
-        return pd.DataFrame(), {}
+        return pd.DataFrame(), {}, {}, {}
 
-df, sector_map = get_radar_data()
+raw_data, map_global, map_sector, map_theme = get_all_radar_data()
 
-if not df.empty:
+# ==========================================
+# 2. 计算逻辑 (Logic Core)
+# ==========================================
+def calculate_scanner_metrics(ticker_map):
+    """计算散点图所需的 Z-Score 和 Momentum"""
+    metrics = []
+    for ticker, name in ticker_map.items():
+        try:
+            df_t = raw_data[ticker]['Close'].dropna()
+            if len(df_t) < 250: continue
+            
+            curr = df_t.iloc[-1]
+            
+            # Z-Score (1年估值位)
+            ma250 = df_t.rolling(250).mean().iloc[-1]
+            std250 = df_t.rolling(250).std().iloc[-1]
+            z_score = (curr - ma250) / std250 if std250 != 0 else 0
+            
+            # Momentum (20日强度)
+            mom20 = (curr / df_t.iloc[-21] - 1) * 100
+            
+            metrics.append({"代码": ticker, "名称": name, "Z-Score": round(z_score, 2), "Momentum": round(mom20, 2)})
+        except: continue
+    return pd.DataFrame(metrics)
+
+def get_structure_df():
+    """计算曲线图所需的 抱团指数 和 离散度"""
+    # 提取收盘价
+    df_close = pd.DataFrame()
+    for t in raw_data.columns.levels[0]:
+        df_close[t] = raw_data[t]['Close']
+    df_close = df_close.ffill()
     
-    # --- 指标计算 ---
-    
-    # 1. 归一化 (Normalize) - 让两条线从同一起跑线出发
-    # (当前价格 / 起始价格 - 1) * 100
-    df['SPY_Norm'] = (df['SPY'] / df['SPY'].iloc[0] - 1) * 100
-    df['RSP_Norm'] = (df['RSP'] / df['RSP'].iloc[0] - 1) * 100
-    
-    # 计算差值用于警报
-    curr_diff = df['SPY_Norm'].iloc[-1] - df['RSP_Norm'].iloc[-1]
+    # 1. 抱团指数
+    df_res = pd.DataFrame()
+    df_res['SPY_Norm'] = (df_close['SPY'] / df_close['SPY'].iloc[0] - 1) * 100
+    df_res['RSP_Norm'] = (df_close['RSP'] / df_close['RSP'].iloc[0] - 1) * 100
+    df_res['Concentration_Diff'] = df_res['SPY_Norm'] - df_res['RSP_Norm']
     
     # 2. 板块离散度
-    sector_cols = list(sector_map.keys())
-    sector_returns = df[sector_cols].pct_change()
-    df['Dispersion'] = sector_returns.std(axis=1) * 100 
-    df['Dispersion_MA20'] = df['Dispersion'].rolling(window=20).mean()
+    sector_tickers = list(map_sector.keys())
+    sec_rets = df_close[sector_tickers].pct_change()
+    df_res['Dispersion'] = sec_rets.std(axis=1) * 100
+    df_res['Dispersion_MA20'] = df_res['Dispersion'].rolling(20).mean()
     
-    # --- 页面布局 ---
+    return df_res
+
+# ==========================================
+# 3. 页面渲染 (UI Rendering)
+# ==========================================
+
+if not raw_data.empty:
+    df_struct = get_structure_df()
     
-    # ==========================================
-    # 图表 1: 抱团指数 (双线竞速版)     # ==========================================
-    st.subheader("🛠️ 抱团指数：市值加权(红) vs 等权平均(蓝)")
-    st.caption("视觉逻辑：**两条线粘合** = 普涨（健康）；**红线远高于蓝线** = 巨头吸血（分化）；**灰色阴影** = 撕裂程度。")
+    # --- PART 1: 市场体温 (曲线图) ---
+    st.header("1️⃣ 市场体温 (Market Structure)")
     
-    fig1 = go.Figure()
+    col_chart1, col_chart2 = st.columns(2)
     
-    # 1. 绘制 SPY (大哥)
-    fig1.add_trace(go.Scatter(
-        x=df.index, y=df['SPY_Norm'], 
-        name="SPY (市值加权) 累计涨幅%", 
-        line=dict(color='#E74C3C', width=2)
-    ))
-    
-    # 2. 绘制 RSP (平均)
-    fig1.add_trace(go.Scatter(
-        x=df.index, y=df['RSP_Norm'], 
-        name="RSP (等权平均) 累计涨幅%", 
-        line=dict(color='#3498DB', width=2),
-        fill='tonexty', # 填充两线之间
-        fillcolor='rgba(200, 200, 200, 0.2)' # 灰色阴影区
-    ))
-    
-    fig1.update_layout(
-        height=500, 
-        hovermode="x unified",
-        yaxis=dict(title="累计涨跌幅 (%)"),
-        legend=dict(orientation="h", y=1.1)
-    )
-    st.plotly_chart(fig1, use_container_width=True)
-    
-    # 智能警报
-    if curr_diff > 20:
-        st.warning(f"⚠️ **极度分化预警：** 过去10年，大盘股跑赢平均股 **{curr_diff:.1f}%**。这通常是牛市末期或存量博弈的特征。")
-    elif curr_diff < -10:
-        st.success(f"✅ **中小盘优势期：** 平均股跑赢大盘股 **{abs(curr_diff):.1f}%**，市场广度极佳。")
-    else:
-        st.info(f"⚖️ **均衡状态：** 两者差距为 {curr_diff:.1f}%，市场结构相对健康。")
+    with col_chart1:
+        st.subheader("🛠️ 抱团指数 (SPY vs RSP)")
+        st.caption("红线在蓝线上方越远 = **抱团越严重** (只涨巨头)。")
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(x=df_struct.index, y=df_struct['SPY_Norm'], name="SPY (市值)", line=dict(color='#E74C3C', width=2)))
+        fig1.add_trace(go.Scatter(x=df_struct.index, y=df_struct['RSP_Norm'], name="RSP (等权)", line=dict(color='#3498DB', width=2), fill='tonexty'))
+        fig1.update_layout(height=350, margin=dict(l=0,r=0,t=10,b=0), legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig1, use_container_width=True)
+        
+    with col_chart2:
+        st.subheader("🌊 离散度 (Dispersion)")
+        st.caption("波峰 = **混乱/恐慌**；波谷 = **共振/一致**。")
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(x=df_struct.index, y=df_struct['Dispersion_MA20'], name="离散度 (MA20)", line=dict(color='#8E44AD', width=2), fill='tozeroy'))
+        fig2.add_hline(y=1.5, line_dash="dot", line_color="red")
+        fig2.add_hline(y=0.5, line_dash="dot", line_color="green")
+        fig2.update_layout(height=350, margin=dict(l=0,r=0,t=10,b=0), legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
 
-    # ==========================================
-    # 图表 2: 板块离散度 (Market Dispersion)
-    # ==========================================
-    st.subheader("🌊 板块离散度：混乱程度 (Dispersion)")
-    st.caption("逻辑：**波峰** = 市场混乱（有人暴涨有人暴跌）；**波谷** = 市场一致（躺平/共振）。")
+    # --- PART 2: 资产扫描 (散点图) ---
+    st.header("2️⃣ 资产扫描 (Asset Scanner)")
+    st.caption("四象限战法：**右上(强势)** | **右下(超跌)** | **左下(弱势)** | **左上(反转)**")
     
-    fig2 = go.Figure()
+    # 三个 Tab 切换不同池子
+    tab_global, tab_sector, tab_theme = st.tabs(["🌍 全球大类", "🏭 美股板块", "🚀 风格赛道"])
     
-    fig2.add_trace(go.Scatter(
-        x=df.index, y=df['Dispersion_MA20'], 
-        name="板块离散度 (20日均线)", 
-        line=dict(color='#8E44AD', width=2),
-        fill='tozeroy', fillcolor='rgba(142, 68, 173, 0.2)'
-    ))
-    
-    # 辅助线
-    fig2.add_hline(y=1.5, line_dash="dot", line_color="red", annotation_text="高离散 (恐慌/剧烈切换)")
-    fig2.add_hline(y=0.5, line_dash="dot", line_color="green", annotation_text="低离散 (共振/低波)")
-    
-    fig2.update_layout(
-        height=500, 
-        hovermode="x unified",
-        yaxis=dict(title="离散度 (%)"),
-        legend=dict(orientation="h", y=1.1)
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-
-    st.markdown("---")
-
-    # ==========================================
-    # 图表 3: 强弱扫描
-    # ==========================================
-    st.subheader("🔍 短期视角：谁在领涨？")
-    
-    col3, col4 = st.columns([3, 1])
-    
-    with col3:
-        recent_perf = (df[sector_cols].iloc[-1] / df[sector_cols].iloc[-20] - 1) * 100
-        recent_perf = recent_perf.sort_values(ascending=False)
-        
-        labels = [f"{sector_map[x]} ({x})" for x in recent_perf.index]
-        values = recent_perf.values
-        colors = ['#E74C3C' if v > 0 else '#2ECC71' for v in values]
-        
-        fig3 = go.Figure(go.Bar(
-            x=labels, y=values,
-            marker_color=colors,
-            text=[f"{v:.1f}%" for v in values],
-            textposition='auto'
-        ))
-        
-        fig3.update_layout(
-            title="近20日板块涨跌幅",
-            yaxis_title="涨跌幅 (%)",
-            height=400
+    def render_scatter(pool_map, key):
+        df_metrics = calculate_scanner_metrics(pool_map)
+        if df_metrics.empty:
+            st.warning("数据不足")
+            return
+            
+        fig = px.scatter(
+            df_metrics, x="Z-Score", y="Momentum", text="名称", color="Momentum",
+            color_continuous_scale="RdYlGn", size_max=60, hover_data=["代码"]
         )
-        st.plotly_chart(fig3, use_container_width=True)
-    
-    with col4:
-        st.write("#### 📊 强弱风向标")
-        st.metric("🥇 领涨王", f"{sector_map[recent_perf.index[0]]}", f"{recent_perf.iloc[0]:.2f}%")
-        st.metric("🐢 领跌王", f"{sector_map[recent_perf.index[-1]]}", f"{recent_perf.iloc[-1]:.2f}%")
+        # 十字线
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        fig.add_vline(x=0, line_dash="dash", line_color="gray")
+        # 标注
+        fig.add_annotation(x=2, y=10, text="🔥 强势", showarrow=False, font=dict(color="red"))
+        fig.add_annotation(x=-2, y=-10, text="❄️ 弱势", showarrow=False, font=dict(color="blue"))
+        
+        fig.update_traces(textposition='top center', marker=dict(size=14, line=dict(width=1, color='DarkSlateGrey')))
+        fig.update_layout(
+            height=500, 
+            xaxis_title="<-- 便宜 (低估值) | 昂贵 (高估值) -->",
+            yaxis_title="<-- 资金流出 | 资金流入 -->",
+            plot_bgcolor="#1e1e1e"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # 数据表
+        with st.expander(f"查看 {key} 详细数据"):
+            st.dataframe(df_metrics.sort_values("Momentum", ascending=False).style.format("{:.2f}", subset=["Z-Score", "Momentum"]), use_container_width=True)
+
+    with tab_global: render_scatter(map_global, "全球")
+    with tab_sector: render_scatter(map_sector, "板块")
+    with tab_theme: render_scatter(map_theme, "赛道")
 
 else:
-    st.info("正在拉取 10 年全景数据，请稍候...")
+    st.info("⏳ 正在拉取全市场数据 (10年)，请稍候...")
